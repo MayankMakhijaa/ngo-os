@@ -17,6 +17,15 @@ final class SettingsService
         'invite_ttl_hours'        => '72',
         'reset_ttl_minutes'       => '60',
         'allow_password_reset'    => '1',
+        // Email (Admin > Email > Settings). Empty values fall back to MAIL_* in .env.
+        'mail_driver'             => '',
+        'smtp_host'               => '',
+        'smtp_port'               => '',
+        'smtp_encryption'         => '',
+        'smtp_username'           => '',
+        'smtp_password_enc'       => '',
+        'mail_from_address'       => '',
+        'mail_from_name'          => '',
     ];
 
     /** Settings that affect security; changes are audited as security events. */

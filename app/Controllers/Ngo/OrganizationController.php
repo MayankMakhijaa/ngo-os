@@ -40,7 +40,14 @@ final class OrganizationController extends NgoController
             'timezone' => 'required|in:Asia/Kolkata,Asia/Dubai,Asia/Singapore,Europe/London,America/New_York,UTC',
             'date_format' => 'required|in:d M Y,d/m/Y,Y-m-d,m/d/Y',
             'primary_color' => 'regex:/^#[0-9a-fA-F]{6}$/',
-        ], 'ngo/organization', ['primary_color' => 'Brand colour']);
+            'member_id_prefix' => 'regex:/^[A-Za-z0-9\-]{1,10}$/',
+            'volunteer_id_prefix' => 'regex:/^[A-Za-z0-9\-]{1,10}$/',
+            'intern_id_prefix' => 'regex:/^[A-Za-z0-9\-]{1,10}$/',
+        ], 'ngo/organization', ['primary_color' => 'Brand colour', 'member_id_prefix' => 'Member ID prefix',
+            'volunteer_id_prefix' => 'Volunteer ID prefix', 'intern_id_prefix' => 'Intern ID prefix']);
+        foreach (['member_id_prefix', 'volunteer_id_prefix', 'intern_id_prefix'] as $k) {
+            $data[$k] = strtoupper($data[$k]);
+        }
         // The NGO name and reference code are managed by Fameweb.
         TenantService::update($tid, array_intersect_key($data, array_flip(['address', 'contact_name', 'email', 'phone', 'website', 'registration_number'])), null);
         TenantService::saveSettings($tid, array_intersect_key($data, TenantService::DEFAULT_SETTINGS));

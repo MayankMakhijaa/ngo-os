@@ -198,7 +198,8 @@ function status_badge(string $status): string
         'active' => 'success', 'trial' => 'info', 'past_due' => 'warning', 'expired' => 'secondary',
         'suspended' => 'danger', 'cancelled' => 'dark', 'deactivated' => 'dark', 'inactive' => 'secondary',
         'invited' => 'warning', 'paid' => 'success', 'pending' => 'warning', 'failed' => 'danger',
-        'refunded' => 'secondary', 'none' => 'secondary',
+        'refunded' => 'secondary', 'none' => 'secondary', 'completed' => 'info', 'issued' => 'success', 'revoked' => 'danger',
+        'sent' => 'success', 'queued' => 'info', 'sending' => 'info',
     ];
     $class = $map[$status] ?? 'secondary';
     $label = ucwords(str_replace('_', ' ', $status));

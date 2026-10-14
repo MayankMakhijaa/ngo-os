@@ -32,7 +32,7 @@ $selected = is_array($selected) ? $selected : [];
         <h2 class="h6 mb-1">Usage limits</h2>
         <p class="small text-body-secondary">Leave empty for unlimited. Limits are enforced on the server; reaching one blocks new additions but never deletes data.</p>
         <?= form_input('max_users', 'Maximum NGO users', $plan['max_users'] ?? '', 'number', ['min' => 0]) ?>
-        <?= form_input('max_members', 'Maximum members & volunteers', $plan['max_members'] ?? '', 'number', ['min' => 0, 'help' => 'Applies when the Members module launches']) ?>
+        <?= form_input('max_members', 'Maximum members, volunteers & interns', $plan['max_members'] ?? '', 'number', ['min' => 0, 'help' => 'Pending + active people; inactive and completed records do not count']) ?>
         <label class="form-label" for="f_storage_value">Maximum document storage</label>
         <div class="input-group mb-3">
           <input type="number" class="form-control<?= invalid_class('storage_value') ?>" id="f_storage_value" name="storage_value" min="0" step="any" value="<?= e(old('storage_value', $storageValue)) ?>">
@@ -41,7 +41,7 @@ $selected = is_array($selected) ? $selected : [];
           </select>
           <div class="invalid-feedback"><?= e(field_error('storage_value') ?? 'Enter a number') ?></div>
         </div>
-        <?= form_input('max_certificates', 'Certificate allowance', $plan['max_certificates'] ?? '', 'number', ['min' => 0, 'help' => 'Reserved for the certificate module']) ?>
+        <?= form_input('max_certificates', 'Certificate allowance', $plan['max_certificates'] ?? '', 'number', ['min' => 0, 'help' => 'Total certificates an NGO can issue']) ?>
       </div></div>
       <div class="card"><div class="card-body">
         <h2 class="h6 mb-1">Enabled modules</h2>

@@ -38,7 +38,7 @@ $selected = $isNew ? (array) old('permissions', []) : $roleKeys;
           <fieldset class="mb-3"><legend class="h6 small text-uppercase text-body-secondary"><?= e(humanize($module)) ?></legend>
           <?php foreach ($perms as $p): $k = $p['perm_key'];
             $can = $editable && in_array($k, $delegable, true);
-            $modOff = isset($moduleMap[$k]) && !in_array($moduleMap[$k], $modules, true); ?>
+            $modOff = isset($moduleMap[$k]) && !array_intersect((array) $moduleMap[$k], $modules); ?>
             <div class="form-check">
               <input class="form-check-input" type="checkbox" name="permissions[]" value="<?= e($k) ?>" id="p_<?= e(str_replace('.', '_', $k)) ?>"
                 <?= in_array($k, $selected, true) ? ' checked' : '' ?><?= $can ? '' : ' disabled' ?>>

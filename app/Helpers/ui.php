@@ -135,3 +135,15 @@ function audit_meta(?string $json): string
     }
     return mb_strimwidth(implode('; ', $parts), 0, 220, '…');
 }
+
+/** Badge for a person's identity verification state. */
+function verification_badge(string $state): string
+{
+    [$tone, $label] = match ($state) {
+        'verified' => ['success', 'Verified'],
+        'pending' => ['warning', 'Pending check'],
+        'rejected' => ['danger', 'Rejected'],
+        default => ['light border text-body-secondary', 'Not submitted'],
+    };
+    return '<span class="badge rounded-pill text-bg-' . $tone . '">' . e($label) . '</span>';
+}

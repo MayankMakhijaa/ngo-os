@@ -19,6 +19,10 @@ final class TenantService
         'notification_email' => '',
         'display_name' => '',
         'primary_color' => '#2b59c3',
+        // Member ID prefixes (empty = MEM / VOL / INT)
+        'member_id_prefix' => '',
+        'volunteer_id_prefix' => '',
+        'intern_id_prefix' => '',
     ];
 
     /**

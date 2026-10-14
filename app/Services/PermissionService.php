@@ -91,7 +91,7 @@ final class PermissionService
             $enabled = SubscriptionService::enabledModules($tenantId);
             $map = (array) config('permissions.permission_modules', []);
             foreach (array_keys($perms) as $key) {
-                if (isset($map[$key]) && !in_array($map[$key], $enabled, true)) {
+                if (isset($map[$key]) && !array_intersect((array) $map[$key], $enabled)) {
                     unset($perms[$key]);
                 }
             }

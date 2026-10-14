@@ -61,6 +61,19 @@ final class Response
         ]);
     }
 
+    /** A generated PDF (receipts, certificates, ID cards, salary slips). Never cached. */
+    public static function pdf(string $filename, string $bytes, bool $inline = false): Response
+    {
+        $safe = preg_replace('/[^A-Za-z0-9._-]/', '_', $filename);
+        return new Response($bytes, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Length' => (string) strlen($bytes),
+            'Content-Disposition' => ($inline ? 'inline' : 'attachment') . '; filename="' . $safe . '"',
+            'X-Content-Type-Options' => 'nosniff',
+            'Cache-Control' => 'no-store',
+        ]);
+    }
+
     public function send(): void
     {
         if (!headers_sent()) {

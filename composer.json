@@ -1,6 +1,6 @@
 {
     "name": "fameweb/ngo-saas",
-    "description": "Fameweb multi-tenant NGO Management SaaS (Phase 1)",
+    "description": "Fameweb multi-tenant NGO Management SaaS (Phases 1 and 2)",
     "type": "project",
     "license": "proprietary",
     "require": {

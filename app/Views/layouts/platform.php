@@ -17,6 +17,8 @@ $shell = [
         ['url' => '/admin/usage', 'label' => 'Usage', 'icon' => 'hdd-stack', 'perm' => 'platform.usage.view'],
         ['section' => 'Configuration'],
         ['url' => '/admin/plans', 'label' => 'Plans', 'icon' => 'layers', 'perm' => 'plans.view'],
+        ['url' => '/admin/certificate-templates', 'label' => 'Certificate templates', 'icon' => 'award', 'perm' => 'certificate_templates.view'],
+        ['url' => '/admin/emails', 'label' => 'Email', 'icon' => 'envelope', 'perm' => 'platform.email.view'],
         ['url' => '/admin/admins', 'label' => 'Administrators', 'icon' => 'person-badge', 'perm' => 'platform.admins.manage'],
         ['url' => '/admin/settings', 'label' => 'Settings', 'icon' => 'gear', 'perm' => 'platform.settings'],
         ['url' => '/admin/audit', 'label' => 'Audit log', 'icon' => 'journal-text', 'perm' => 'platform.audit.view'],

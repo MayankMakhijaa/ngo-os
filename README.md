@@ -1,4 +1,4 @@
-# Fameweb NGO Cloud — Phase 1
+# Fameweb NGO Cloud — Phases 1 and 2
 
 Fameweb NGO Cloud is a multi-tenant NGO management SaaS for Fameweb.
 
@@ -10,6 +10,14 @@ Fameweb administrators can:
 
 Each NGO gets its own portal with users, roles, per-user permissions, organization settings, subscription and usage pages.
 
+Phase 2 adds, each switched on per plan as a module:
+* **Members, volunteers and interns**: registration with automatic member IDs (MEM-00001, VOL-00001, INT-00001), categories, status and history, encrypted identity documents, Aadhaar verification (only the last 4 digits are ever stored), salary/stipend slips and ID cards as PDFs.
+* **Certificates**: Fameweb designs templates in a visual builder and assigns them to specific NGOs; the NGO issues, emails, downloads (PDF) and revokes certificates.
+* **80G donation receipts**: generated from the NGO's name, logo and 80G details, numbered per financial year, emailed to donors, with a Form 10BD export. The wording is editable per NGO and is **not** presented as legally certified.
+* **Email automation**: an outbox with delivery attempts, automatic retries with back-off and an email log; SMTP for the platform and optionally per NGO. Phase 1 invitations and password resets now send real emails.
+
+PDFs are produced by a small pure-PHP generator (`app/Pdf`), so nothing extra is needed on shared hosting.
+
 The stack is plain PHP 8.2+, MySQL/MariaDB, Bootstrap 5 and Chart.js. There is no framework, no Composer packages and no Node.js. It runs on Hostinger shared hosting.
 
 * **Architecture, ERD, security model:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -18,7 +26,7 @@ The stack is plain PHP 8.2+, MySQL/MariaDB, Bootstrap 5 and Chart.js. There is n
 
 ## Run it locally
 
-You need PHP 8.2+ with `pdo_mysql`, `mbstring`, `fileinfo` and `openssl`, plus MySQL 8 or MariaDB 10.6+.
+You need PHP 8.2+ with `pdo_mysql`, `mbstring`, `fileinfo`, `openssl` and `gd` (`sodium` and `zlib` are used when present), plus MySQL 8 or MariaDB 10.6+. Hostinger's PHP 8.2+ has all of these.
 
 ```bash
 # 1. Database and user (any names; these are examples)
@@ -30,6 +38,8 @@ mysql -u root -e "CREATE DATABASE ngo_saas CHARACTER SET utf8mb4 COLLATE utf8mb4
 cp .env.example .env
 #    set APP_ENV=development, DB_* values, and INSTALL_TOKEN:
 php -r "echo bin2hex(random_bytes(24)), PHP_EOL;"
+#    and the encryption key (documents, SMTP passwords, queued emails):
+php bin/generate-key.php        # paste the APP_KEY=... line into .env
 
 # 3. Serve
 php -S 127.0.0.1:8080 -t public public/index.php
@@ -51,7 +61,8 @@ php bin/seed-demo.php --purge  # remove all demo data
 | Command | Purpose |
 |---|---|
 | `php bin/migrate.php` | Apply new database migrations and re-sync permissions (`--status` to list) |
-| `php bin/cron.php` | Optional daily housekeeping (subscription expiry, old sessions/tokens) |
+| `php bin/cron.php` | Email retries every run; daily housekeeping (subscription expiry, old sessions/tokens). Schedule every 5 to 15 minutes |
+| `php bin/generate-key.php` | Print a new `APP_KEY` for `.env` (keep a backup: encrypted documents cannot be read without it) |
 | `php tests/run.php` | Automated test suite (needs `.env.testing`, see below) |
 
 ## Tests
@@ -61,7 +72,7 @@ cp .env.testing.example .env.testing   # an EMPTY database whose name ends in _t
 php tests/run.php
 ```
 
-The suite wipes and installs the test database, starts PHP's built-in server on a free port, and runs more than 100 checks over real HTTP. They cover:
+The suite wipes and installs the test database, starts PHP's built-in server on a free port, and runs 183 checks over real HTTP. They cover:
 
 * sign-in, lockout, invitations and password reset without account enumeration
 * CSRF
@@ -73,6 +84,11 @@ The suite wipes and installs the test database, starts PHP's built-in server on 
 * transaction rollback
 * session expiry and logout
 * audit-log redaction and hash-chain tamper detection
+* members: ID series, Aadhaar check digit, only last 4 digits stored (database, session, logs), member limit, encrypted documents, verification, slips and ID cards, cross-tenant 404s
+* certificates: templates visible only to assigned NGOs, issue, limit, revoke
+* 80G receipts: financial-year numbering, double-submit idempotency, cash/in-kind ineligibility, cancellation, Form 10BD export
+* email: a fake SMTP server checks real delivery, a 451 retry through cron, manual retry, attachments, token redaction and that SMTP passwords never leak
+* every generated PDF is checked structurally (xref offsets)
 
 An optional browser walkthrough of the full acceptance workflow uses Playwright (`tests/browser/acceptance.mjs`). It is a development tool and is not needed on the server.
 
@@ -96,7 +112,9 @@ tests/        run.php, browser/
 | Fameweb Super Admin | `/admin` | Everything on the platform |
 | Fameweb Support | `/admin` | Read-only: NGOs, plans, subscriptions, usage, logs |
 | NGO Super Admin | `/ngo` | Everything inside their own NGO (locked role) |
-| NGO Manager | `/ngo` | Users (no permission overrides), view roles, organization, subscription, usage, audit |
-| NGO Operations | `/ngo` | Dashboard and organization view; more by explicit grant |
+| NGO Manager | `/ngo` | Users (no permission overrides), view roles, organization, subscription, usage, audit; people, slips (view), certificates, receipts (not settings), email log |
+| NGO Operations | `/ngo` | Dashboard, organization view and the people list; more by explicit grant |
 
 NGO Manager and Operations permissions are copied into each NGO, so each NGO can tune them, add custom roles, and grant or deny single permissions per user. Nobody can hand out a permission they do not hold.
+
+NGOs created before Phase 2 keep their existing Manager and Operations roles unchanged: their NGO Super Admin gets the new permissions automatically and can add them to other roles under Roles & permissions.
