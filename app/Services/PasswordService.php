@@ -42,14 +42,14 @@ final class PasswordService
     }
 
     /**
-     * Set a new password, activate an invited account and invalidate every existing session
-     * of the user (session_version bump).
+     * Set a new password, activate an invited account, clear any "must change" flag and
+     * invalidate every existing session of the user (session_version bump).
      */
     public static function setPassword(int $userId, string $password): void
     {
         Database::instance()->execute(
             "UPDATE users
-                SET password_hash = ?, password_changed_at = NOW(), session_version = session_version + 1,
+                SET password_hash = ?, password_changed_at = NOW(), must_change_password = 0, session_version = session_version + 1,
                     status = IF(status = 'invited', 'active', status)
               WHERE id = ?",
             [self::hash($password), $userId]

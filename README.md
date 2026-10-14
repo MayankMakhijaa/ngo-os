@@ -72,7 +72,7 @@ cp .env.testing.example .env.testing   # an EMPTY database whose name ends in _t
 php tests/run.php
 ```
 
-The suite wipes and installs the test database, starts PHP's built-in server on a free port, and runs 183 checks over real HTTP. They cover:
+The suite wipes and installs the test database, starts PHP's built-in server on a free port, and runs 216 checks over real HTTP. They cover:
 
 * sign-in, lockout, invitations and password reset without account enumeration
 * CSRF
@@ -88,6 +88,7 @@ The suite wipes and installs the test database, starts PHP's built-in server on 
 * certificates: templates visible only to assigned NGOs, issue, limit, revoke
 * 80G receipts: financial-year numbering, double-submit idempotency, cash/in-kind ineligibility, cancellation, Form 10BD export
 * email: a fake SMTP server checks real delivery, a 451 retry through cron, manual retry, attachments, token redaction and that SMTP passwords never leak
+* Fameweb support access: permission gating, single-use reset links, temporary passwords that must be changed and never reach email or logs, and audited Super Admin support sessions (banner, return, expiry, sign-out)
 * every generated PDF is checked structurally (xref offsets)
 
 An optional browser walkthrough of the full acceptance workflow uses Playwright (`tests/browser/acceptance.mjs`). It is a development tool and is not needed on the server.
@@ -109,7 +110,7 @@ tests/        run.php, browser/
 
 | Role | Area | Summary |
 |---|---|---|
-| Fameweb Super Admin | `/admin` | Everything on the platform |
+| Fameweb Super Admin | `/admin` | Everything on the platform, including resetting NGO users' passwords and audited sign-in as an NGO's Super Admin |
 | Fameweb Support | `/admin` | Read-only: NGOs, plans, subscriptions, usage, logs |
 | NGO Super Admin | `/ngo` | Everything inside their own NGO (locked role) |
 | NGO Manager | `/ngo` | Users (no permission overrides), view roles, organization, subscription, usage, audit; people, slips (view), certificates, receipts (not settings), email log |

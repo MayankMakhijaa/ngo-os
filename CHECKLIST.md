@@ -108,7 +108,11 @@ All verified by `tests/browser/acceptance.mjs` and/or `tests/run.php`:
   - Pure-PHP SMTP client (SSL 465 / STARTTLS 587 / AUTH LOGIN and PLAIN). Platform SMTP in Admin > Email; optional own SMTP per NGO; NGOs otherwise send through the platform with their own sender name and Reply-To.
   - Automatic emails per NGO: welcome with member ID, certificate issued, receipt to donor.
   - Email logs for Fameweb (all) and each NGO (its own), with manual retry and a test email.
-- ✅ Tests: `tests/run.php` now 183 checks (80 new), including a fake SMTP server.
+- ✅ Tests: `tests/run.php` had 183 checks (80 new) at this point, including a fake SMTP server.
+- ✅ **Fameweb support access** (requested 14 Oct 2026, migration `003_admin_support_access.sql`)
+  - Reset password for any NGO user from Admin > NGOs > Users: a single-use link (emailed and shown once), or a temporary password shown once to the admin, never emailed, which the user must change at the next sign-in. Permission `tenants.users.reset`.
+  - "Sign in as Super Admin": an audited support session as the NGO's active Super Admin that never uses or changes their password. It needs a reason, shows a banner with "Return to Fameweb", ends after 60 minutes, on sign-out or if the admin loses access, and cannot change the NGO user's own profile or password. Start, end and every action are recorded in the NGO's audit log (visible in the Fameweb audit log too). Permission `tenants.impersonate`.
+  - Both permissions belong to Fameweb Super Admin only; Fameweb Support does not get them. Tests: 216 checks (33 new).
 
 ## Remaining / needs you
 

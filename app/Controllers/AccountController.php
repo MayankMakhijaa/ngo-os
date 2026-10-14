@@ -9,6 +9,7 @@ use App\Core\Response;
 use App\Core\Session;
 use App\Services\AuditLogger;
 use App\Services\PasswordService;
+use App\Services\SupportAccessService;
 
 /** The signed-in user's own profile and password. */
 final class AccountController extends Controller
@@ -23,11 +24,21 @@ final class AccountController extends Controller
         if (!Auth::isPlatform()) {
             (new \App\Middleware\TenantMiddleware())->handle($this->request, null);
         }
-        return $this->view('account/show', ['title' => 'My account', 'me' => $this->user()]);
+        return $this->view('account/show', ['title' => 'My account', 'me' => $this->user(), 'supportSession' => SupportAccessService::active() !== null]);
+    }
+
+    /** A Fameweb support session must not change the NGO user's own sign-in details. */
+    private function denyInSupportSession(): void
+    {
+        if (SupportAccessService::active()) {
+            Session::flash('error', 'A Fameweb support session cannot change this user\'s profile or password.');
+            throw new \App\Core\RedirectException(url('account'));
+        }
     }
 
     public function updateProfile(): Response
     {
+        $this->denyInSupportSession();
         $data = $this->validate(['name' => 'required|max:120', 'phone' => 'phone|max:30'], 'account');
         $me = $this->user();
         Database::instance()->update('users', ['name' => $data['name'], 'phone' => $data['phone'] ?: null], ['id' => (int) $me['id']]);
@@ -37,6 +48,7 @@ final class AccountController extends Controller
 
     public function changePassword(): Response
     {
+        $this->denyInSupportSession();
         $me = $this->user();
         $current = (string) ($this->request->body['current_password'] ?? '');
         $new = (string) ($this->request->body['password'] ?? '');

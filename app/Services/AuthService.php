@@ -70,6 +70,8 @@ final class AuthService
 
     public static function logout(): void
     {
+        // Signing out of a Fameweb support session ends it (audited) and signs the admin out too.
+        SupportAccessService::stop('signed_out');
         $user = Auth::user();
         if ($user) {
             AuditLogger::log('auth.logout', 'user', $user['id'], [], $user['tenant_id'] !== null ? (int) $user['tenant_id'] : null, $user);

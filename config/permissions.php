@@ -14,6 +14,8 @@ return [
         ['platform.dashboard',       'platform', 'dashboard',     'View SaaS dashboard'],
         ['tenants.view',             'platform', 'tenants',       'View NGOs, their users and usage'],
         ['tenants.manage',           'platform', 'tenants',       'Register, edit, activate, suspend and deactivate NGOs'],
+        ['tenants.users.reset',      'platform', 'tenants',       'Reset NGO users\' passwords (reset link or temporary password)'],
+        ['tenants.impersonate',      'platform', 'tenants',       'Sign in to an NGO as its Super Admin (audited support session)'],
         ['plans.view',               'platform', 'plans',         'View subscription plans'],
         ['plans.manage',             'platform', 'plans',         'Create, edit, activate and deactivate plans'],
         ['subscriptions.view',       'platform', 'subscriptions', 'View subscriptions and payments'],

@@ -5,7 +5,7 @@ namespace App\Core;
 
 /**
  * Small router. Routes are declared in routes/web.php with a handler [Controller::class, 'method']
- * and a middleware list. Parameter constraints: {id}/{doc} digits, {type} people type, {token} hex, {uuid} UUID, others [^/]+.
+ * and a middleware list. Parameter constraints: {id}/{doc}/{user} digits, {type} people type, {token} hex, {uuid} UUID, others [^/]+.
  */
 final class Router
 {
@@ -41,7 +41,7 @@ final class Router
         $full = '/' . trim($prefix . $path, '/');
         $regex = preg_replace_callback('/\{([a-z_]+)\}/', static function ($m) {
             $pattern = match ($m[1]) {
-                'id', 'doc' => '\d+',
+                'id', 'doc', 'user' => '\d+',
                 'type'  => 'members|volunteers|interns',
                 'token' => '[a-f0-9]{64}',
                 'uuid'  => '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',

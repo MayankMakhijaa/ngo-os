@@ -21,6 +21,7 @@ use App\Controllers\HomeController;
 use App\Controllers\InstallController;
 use App\Controllers\Ngo;
 use App\Controllers\Platform;
+use App\Controllers\SupportSessionController;
 
 // ---------------------------------------------------------------- Installer
 $router->get('/install', [InstallController::class, 'show']);
@@ -43,6 +44,7 @@ $router->get('/account', [AccountController::class, 'show'], ['auth']);
 $router->post('/account/profile', [AccountController::class, 'updateProfile'], ['auth']);
 $router->post('/account/password', [AccountController::class, 'changePassword'], ['auth']);
 $router->get('/files/{uuid}', [FileController::class, 'show'], ['auth']);
+$router->post('/support-session/end', [SupportSessionController::class, 'end'], ['auth']);
 
 // ---------------------------------------------------------------- Fameweb admin panel
 $router->group('/admin', ['auth', 'platform'], function ($r) {
@@ -56,6 +58,8 @@ $router->group('/admin', ['auth', 'platform'], function ($r) {
     $r->post('/ngos/{id}', [Platform\TenantController::class, 'update'], ['perm:tenants.manage']);
     $r->post('/ngos/{id}/status', [Platform\TenantController::class, 'status'], ['perm:tenants.manage']);
     $r->post('/ngos/{id}/invite', [Platform\TenantController::class, 'invite'], ['perm:tenants.manage']);
+    $r->post('/ngos/{id}/users/{user}/reset', [Platform\TenantController::class, 'resetUserPassword'], ['perm:tenants.users.reset']);
+    $r->post('/ngos/{id}/support-session', [Platform\TenantController::class, 'impersonate'], ['perm:tenants.impersonate']);
     $r->get('/ngos/{id}/subscription', [Platform\SubscriptionController::class, 'assignForm'], ['perm:subscriptions.manage']);
     $r->post('/ngos/{id}/subscription', [Platform\SubscriptionController::class, 'assign'], ['perm:subscriptions.manage']);
 

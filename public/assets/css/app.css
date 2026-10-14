@@ -121,3 +121,10 @@ a:hover > .stat-card { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(
 .cert-element-row[data-type="logo"] .el-size, .cert-element-row[data-type="logo"] .el-color,
 .cert-element-row[data-type="rect"] .el-size { display: none; }
 #certElements { max-height: 70vh; overflow-y: auto; position: relative; }
+
+/* Fameweb support session ("sign in as NGO Super Admin") */
+.support-banner {
+  position: sticky; top: 0; z-index: 1050;
+  background: #7a2e0e; color: #fff; padding: .5rem 1rem; font-size: .875rem;
+}
+.support-banner .btn-light { color: #7a2e0e; font-weight: 600; }

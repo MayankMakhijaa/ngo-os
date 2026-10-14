@@ -26,7 +26,11 @@ final class AuditLogger
         ?array $actor = null,
     ): void {
         // $actor null = current user; [] = the system itself (automatic transitions, cron).
-        $actor ??= Auth::user();
+        if ($actor === null) {
+            $actor = Auth::user();
+            // Actions taken in a Fameweb support session name the Fameweb admin behind them.
+            $metadata += SupportAccessService::auditContext();
+        }
         $isSystem = $actor === [];
         if ($tenantId === false) {
             // Default tenant: the request's tenant, else the actor's tenant, else platform-level (NULL).

@@ -12,6 +12,7 @@ use App\Exceptions\DomainException;
 use App\Exceptions\LimitExceededException;
 use App\Services\AuditLogger;
 use App\Services\SubscriptionService;
+use App\Services\SupportAccessService;
 use App\Services\TenantService;
 use App\Services\UsageService;
 
@@ -150,7 +151,7 @@ final class TenantController extends PlatformController
             'events' => SubscriptionService::events($id, 20),
             'usage' => UsageService::summary($id, $subscription),
             'users' => $db->fetchAll(
-                'SELECT u.id, u.name, u.email, u.status, u.last_login_at, u.created_at, r.name AS role_name
+                'SELECT u.id, u.name, u.email, u.status, u.must_change_password, u.last_login_at, u.created_at, r.name AS role_name
                    FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.is_primary = 1
                    LEFT JOIN roles r ON r.id = ur.role_id
                   WHERE u.tenant_id = ? ORDER BY u.id',
@@ -163,6 +164,8 @@ final class TenantController extends PlatformController
             ),
             'settings' => TenantService::settings($id),
             'inviteLink' => Session::getFlash('invite_link'),
+            'supportSecret' => Session::getFlash('support_secret'),
+            'superAdmin' => SupportAccessService::superAdminOf($id),
             'paymentNonce' => bin2hex(random_bytes(16)),
         ]);
     }
@@ -223,5 +226,42 @@ final class TenantController extends PlatformController
         }
         Session::flash('invite_link', $link);
         return $this->redirect('admin/ngos/' . $id, 'success', 'A new single-use onboarding link was created. Earlier links no longer work.');
+    }
+
+    /** Reset an NGO user's password: a single-use link, or a temporary password to change at next sign-in. */
+    public function resetUserPassword(): Response
+    {
+        $id = (int) $this->request->param('id');
+        $userId = (int) $this->request->param('user');
+        $mode = $this->request->str('mode');
+        $back = 'admin/ngos/' . $id . '#tab-users';
+        try {
+            if ($mode === 'temporary') {
+                $temp = SupportAccessService::setTemporaryPassword($this->user(), $id, $userId);
+                // Shown once to this admin; never stored in plain text or emailed.
+                Session::flash('support_secret', ['label' => 'Temporary password', 'value' => $temp, 'user_id' => $userId,
+                    'help' => 'Give this to the user over a trusted channel (for example a phone call). They must choose a new password when they sign in. It is not shown again.']);
+                return $this->redirect($back, 'success', 'Temporary password set. The user was signed out everywhere and emailed a notice (without the password).');
+            }
+            $link = SupportAccessService::issueResetLink($this->user(), $id, $userId);
+            Session::flash('support_secret', ['label' => 'Single-use link', 'value' => $link, 'user_id' => $userId,
+                'help' => 'The link was also emailed to the user if email is configured. It works once, expires automatically and is not shown again.']);
+            return $this->redirect($back, 'success', 'A single-use link was created. Earlier links no longer work.');
+        } catch (DomainException $e) {
+            return $this->redirect($back, 'error', $e->getMessage());
+        }
+    }
+
+    /** Start an audited support session as the NGO's Super Admin (never uses their password). */
+    public function impersonate(): Response
+    {
+        $id = (int) $this->request->param('id');
+        try {
+            $r = SupportAccessService::start($this->user(), $id, $this->request->str('reason'));
+        } catch (DomainException $e) {
+            return $this->redirect('admin/ngos/' . $id, 'error', $e->getMessage());
+        }
+        return $this->redirect('ngo', 'info', 'You are signed in to ' . $r['tenant']['name'] . ' as ' . $r['user']['name']
+            . '. Everything you do is recorded in the NGO\'s audit log. The session ends after ' . SupportAccessService::MAX_MINUTES . ' minutes.');
     }
 }

@@ -820,7 +820,91 @@ proc_terminate($smtp);
 $logs = (string) @file_get_contents($storage . '/logs/server.log') . implode('', array_map('file_get_contents', glob($storage . '/logs/*.log') ?: []));
 check('Full Aadhaar numbers never reach any log', !str_contains($logs, $aadhaar) && !str_contains($logs, $aadhaarSpaced));
 
-// ================================================================= 16. Production error handling
+// ================================================================= 16. Fameweb support access
+section('Fameweb support access (password reset, sign in as NGO Super Admin)');
+$betaAdminId = $userIdByEmail('admin@beta.test');
+$supportId = $db->insert('users', ['user_type' => 'platform', 'name' => 'Support Agent', 'email' => 'support@fameweb.test', 'status' => 'active']);
+$db->insert('user_roles', ['user_id' => $supportId, 'role_id' => (int) $db->fetchColumn("SELECT id FROM roles WHERE tenant_id IS NULL AND slug = 'fameweb_support'"), 'is_primary' => 1]);
+PasswordService::setPassword($supportId, $pw);
+$sup = new Client($base);
+$sup->login('support@fameweb.test', $pw);
+check('Support admins see neither action on the NGO page', $sup->get('/admin/ngos/' . $tB)->status === 200 && !$sup->has('Sign in as Super Admin') && !$sup->has('Set a temporary password'));
+check('Support admins cannot start a support session (403)', $sup->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'x'], true, '/admin')->status === 403);
+check('Support admins cannot reset NGO passwords (403)', $sup->post('/admin/ngos/' . $tB . '/users/' . $betaAdminId . '/reset', ['mode' => 'temporary'], true, '/admin')->status === 403);
+check('NGO users cannot reach either action (403)', $p2b->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'x'], true, '/ngo')->status === 403
+    && $p2b->post('/admin/ngos/' . $tA . '/users/' . $userIdByEmail('admin@alpha.test') . '/reset', ['mode' => 'link'], true, '/ngo')->status === 403);
+check('Fameweb Super Admin sees both actions', $c->get('/admin/ngos/' . $tB)->status === 200 && $c->has('Sign in as Super Admin') && $c->has('Set a temporary password'));
+
+$before = $db->fetch('SELECT password_hash, last_login_at, session_version FROM users WHERE id = ?', [$betaAdminId]);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => ''], true, '/admin/ngos/' . $tB);
+check('A reason is required to sign in as the NGO', $c->redirectsTo('/admin/ngos/' . $tB) && $c->get('/admin')->status === 200);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Ticket 42: help with receipts'], true, '/admin/ngos/' . $tB);
+check('Sign in as Super Admin lands in the NGO workspace', $c->redirectsTo('/ngo') && $c->get('/ngo')->status === 200);
+check('A support-session banner with a return button is shown', $c->has('Fameweb support session') && $c->has('Return to Fameweb') && $c->has('Beta Admin'));
+check('The Fameweb panel is closed while signed in as the NGO', $c->get('/admin')->status === 403);
+$started = $db->fetch("SELECT * FROM audit_logs WHERE action = 'support.session_started' ORDER BY id DESC LIMIT 1");
+check('The start is audited in the NGO log with the admin and reason', $started && (int) $started['tenant_id'] === $tB && (int) $started['actor_user_id'] === $adminId
+    && $started['actor_type'] === 'platform' && str_contains((string) $started['metadata'], 'Ticket 42'));
+$c->post('/ngo/people/members', ['name' => 'Added By Support', 'status' => 'active'], true, '/ngo/people/members/create');
+check('Actions in the session name the Fameweb admin in the audit log', (int) $db->fetchColumn(
+    "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ? AND id > ? AND metadata LIKE ?", [$tB, (int) $started['id'], '%"support_session_by":' . $adminId . '%']) > 0);
+$c->post('/account/password', ['current_password' => 'x', 'password' => 'An0ther-pass-1', 'password_confirmation' => 'An0ther-pass-1'], true, '/account');
+$after = $db->fetch('SELECT password_hash, last_login_at, session_version FROM users WHERE id = ?', [$betaAdminId]);
+check('The NGO user\'s password and sign-in record are untouched', $c->redirectsTo('/account') && $before == $after);
+check('The NGO user\'s own session keeps working', $p2b->get('/ngo')->status === 200);
+$c->post('/support-session/end', [], true, '/ngo');
+check('Return to Fameweb restores the admin session', $c->redirectsTo('/admin/ngos/' . $tB) && $c->get('/admin')->status === 200 && !$c->has('Return to Fameweb'));
+check('The end is audited', (int) $db->fetchColumn("SELECT COUNT(*) FROM audit_logs WHERE action = 'support.session_ended' AND tenant_id = ? AND actor_user_id = ? AND metadata LIKE '%returned%'", [$tB, $adminId]) === 1);
+check('The NGO sees the session in its own audit log', $p2b->get('/ngo/audit')->status === 200 && $p2b->has('Fameweb support session started') && $p2b->has('Fameweb support session ended'));
+
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Expiry test'], true, '/admin/ngos/' . $tB);
+$file = $storage . '/sessions/sess_' . $c->sessionId();
+file_put_contents($file, preg_replace('/s:7:"started";i:\d+;/', 's:7:"started";i:' . (time() - 4000) . ';', (string) file_get_contents($file)));
+check('Support sessions end automatically after the time limit', $c->get('/ngo')->redirectsTo('/admin') && $c->get('/admin')->status === 200
+    && (int) $db->fetchColumn("SELECT COUNT(*) FROM audit_logs WHERE action = 'support.session_ended' AND metadata LIKE '%expired%'") === 1);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Sign-out test'], true, '/admin/ngos/' . $tB);
+$c->logout();
+check('Signing out ends the support session and the admin session', $c->get('/admin')->redirectsTo('/login')
+    && (int) $db->fetchColumn("SELECT COUNT(*) FROM audit_logs WHERE action = 'support.session_ended' AND metadata LIKE '%signed_out%'") === 1);
+$c->login('admin@fameweb.test', $adminPass);
+TenantService::changeStatus($tB, 'suspended', 'Support test', $admin);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Suspended test'], true, '/admin/ngos/' . $tB);
+check('A suspended NGO cannot be signed in to', $c->redirectsTo('/admin/ngos/' . $tB) && $c->get('/admin')->status === 200);
+TenantService::changeStatus($tB, 'active', 'Support test over', $admin);
+
+// Password reset by Fameweb
+$c->post('/admin/ngos/' . $tB . '/users/' . $betaAdminId . '/reset', ['mode' => 'link'], true, '/admin/ngos/' . $tB);
+$c->follow();
+check('A single-use reset link is shown once to the admin', preg_match('#/reset-password/([a-f0-9]{64})#', html_entity_decode($c->body), $lm) === 1
+    && !$c->get('/admin/ngos/' . $tB)->has($lm[1]));
+check('The reset link is stored hashed and emailed to the user', (int) $db->fetchColumn("SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = ? AND token_hash = ? AND created_by = ?", [$betaAdminId, hash('sha256', $lm[1] ?? ''), $adminId]) === 1
+    && (int) $db->fetchColumn("SELECT COUNT(*) FROM email_outbox WHERE to_email = 'admin@beta.test' AND subject = 'Reset your password' AND created_at >= NOW() - INTERVAL 1 MINUTE") >= 1);
+$c->post('/admin/ngos/' . $tA . '/users/' . $betaAdminId . '/reset', ['mode' => 'temporary'], true, '/admin/ngos/' . $tA);
+check('A user cannot be reset through another NGO', $c->redirectsTo('/admin/ngos/' . $tA) && $c->follow()->has('does not belong') && (int) $db->fetchColumn('SELECT must_change_password FROM users WHERE id = ?', [$betaAdminId]) === 0);
+check('Fameweb admin accounts cannot be reset from an NGO page', $c->post('/admin/ngos/' . $tB . '/users/' . $adminId . '/reset', ['mode' => 'temporary'], true, '/admin/ngos/' . $tB)->follow()->has('does not belong'));
+$c->post('/admin/ngos/' . $tB . '/users/' . $betaAdminId . '/reset', ['mode' => 'temporary'], true, '/admin/ngos/' . $tB);
+$c->follow();
+$temp = preg_match('/id="supportSecret" value="([A-Za-z0-9]{14})"/', $c->body, $tm) ? $tm[1] : '';
+check('A temporary password is shown once to the admin', $temp !== '' && !$c->get('/admin/ngos/' . $tB)->has($temp) && $c->has('Must change password'));
+check('The user is signed out everywhere', $p2b->get('/ngo')->redirectsTo('/login'));
+check('Earlier reset links stop working', $db->fetchColumn('SELECT used_at FROM password_reset_tokens WHERE token_hash = ?', [hash('sha256', $lm[1] ?? '')]) !== null);
+$notice = $db->fetch("SELECT * FROM email_outbox WHERE to_email = 'admin@beta.test' AND subject = 'Your password was reset' ORDER BY id DESC LIMIT 1");
+$everything = (string) @file_get_contents($storage . '/logs/mail.log') . (string) @file_get_contents($storage . '/logs/server.log')
+    . implode('', array_map('file_get_contents', glob($storage . '/logs/app-*.log') ?: [])) . (string) $db->fetchColumn('SELECT GROUP_CONCAT(COALESCE(metadata, "")) FROM audit_logs');
+check('The user is emailed a notice without the password', $notice && !str_contains(\App\Services\EmailService::displayBody($notice), $temp));
+check('The temporary password never reaches logs or the audit trail', $temp !== '' && !str_contains($everything, $temp));
+$bt = new Client($base);
+$bt->login('admin@beta.test', $temp);
+check('The user can sign in with the temporary password', $bt->redirectsTo('/ngo'));
+check('...but must choose a new password before anything else', $bt->get('/ngo')->redirectsTo('/account') && $bt->get('/ngo/people/members')->redirectsTo('/account')
+    && $bt->get('/account')->status === 200 && $bt->has('Choose a new password'));
+$bt->post('/account/password', ['current_password' => $temp, 'password' => $pw, 'password_confirmation' => $pw], true, '/account');
+check('After changing it the workspace opens again', $bt->redirectsTo('/account') && $bt->get('/ngo')->status === 200
+    && (int) $db->fetchColumn('SELECT must_change_password FROM users WHERE id = ?', [$betaAdminId]) === 0);
+check('The temporary password no longer works', (new Client($base))->login('admin@beta.test', $temp)->redirectsTo('/login'));
+check('Audit hash chain still verifies', AuditLogger::verify() === null);
+
+// ================================================================= 17. Production error handling
 section('Errors');
 $miss = (new Client($base))->get('/does-not-exist');
 check('Unknown route returns a friendly 404', $miss->status === 404 && !str_contains($miss->body, BASE_PATH));
