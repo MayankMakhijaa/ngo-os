@@ -88,7 +88,7 @@ All verified by `tests/browser/acceptance.mjs` and/or `tests/run.php`:
 
 ## Remaining / needs you
 
-- ⏳ **Push to GitHub.** The code is committed on branch `phase-1` in a local clone of `MayankMakhijaa/ngo-os`, but pushing is refused until the Claude GitHub App is installed on that repository. After that, the branch and a draft PR can go up.
+- ⏳ **Base branch and PR.** The code is pushed to `phase-1` on GitHub. The repository was empty, so `phase-1` is currently its only (default) branch. Create a `main` branch when you want future work reviewed as pull requests against it.
 - ⏳ **Deploy to Hostinger** following [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The app has only been run locally so far, on PHP 8.3 with MariaDB 10.11.
 - ⏳ **Real email delivery.** `MAIL_DRIVER=mail` uses PHP `mail()`. Add SMTP (for example Hostinger email or a transactional provider) if deliverability matters.
 - ⏳ **Apache `.htaccess` rules** were written for Hostinger but were not exercised here, because the test environment uses PHP's built-in server. Run the "must return 403/404" items in the deployment checklist after the first upload.
