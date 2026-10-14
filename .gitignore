@@ -1,0 +1,16 @@
+/.env
+/.env.*
+!/.env.example
+!/.env.testing.example
+/storage/logs/*
+/storage/cache/*
+/storage/sessions/*
+/storage/private/tenants/*
+/storage/installed.lock
+!/storage/**/.gitkeep
+!/storage/**/.htaccess
+/vendor/*
+!/vendor/.gitkeep
+/public/app_path.php
+/tests/.tmp/
+/tests/browser/node_modules

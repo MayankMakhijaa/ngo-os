@@ -1,0 +1,12 @@
+# FALLBACK ONLY: used when the whole project has to be uploaded inside public_html
+# (see docs/DEPLOYMENT.md, option B). It sends every request into public/ and
+# blocks direct access to application code, configuration, storage and logs.
+Options -Indexes
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule (^|/)\. - [F,L]
+    RewriteRule ^(app|bootstrap|config|database|routes|storage|tests|bin|docs|vendor)(/|$) - [F,L]
+    RewriteRule ^(composer\.(json|lock)|README\.md|CHECKLIST\.md)$ - [F,L]
+    RewriteCond %{REQUEST_URI} !/public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
