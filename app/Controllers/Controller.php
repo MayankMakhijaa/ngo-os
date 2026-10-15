@@ -46,7 +46,7 @@ abstract class Controller
 
     /**
      * Validate request input; on failure redirect back to $backTo with field errors and the
-     * previous input (passwords are never echoed back).
+     * previous input (passwords, tokens, Aadhaar and bank account numbers are never echoed back).
      */
     protected function validate(array $rules, string $backTo, array $labels = []): array
     {
@@ -69,7 +69,7 @@ abstract class Controller
     {
         $old = array_filter(
             $this->request->body,
-            static fn ($v, $k) => is_string($k) && !preg_match('/pass|token|_csrf/i', $k),
+            static fn ($v, $k) => is_string($k) && !preg_match('/pass|token|_csrf|aadhaar|bank_account/i', $k),
             ARRAY_FILTER_USE_BOTH
         );
         Session::flash('_errors', $errors);

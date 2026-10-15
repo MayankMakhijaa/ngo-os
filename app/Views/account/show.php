@@ -1,4 +1,10 @@
-<?php $heading = 'My account'; $subtitle = 'Your profile and password'; include __DIR__ . '/../partials/page_header.php'; ?>
+<?php $heading = 'My account'; $subtitle = 'Your profile and password'; include __DIR__ . '/../partials/page_header.php';
+$mustChange = (int) ($me['must_change_password'] ?? 0) === 1; ?>
+<?php if (!empty($supportSession)): ?>
+  <div class="alert alert-warning small">This is a Fameweb support session. The NGO user's profile and password cannot be changed from it.</div>
+<?php elseif ($mustChange): ?>
+  <div class="alert alert-warning"><strong>Choose a new password to continue.</strong> Fameweb support gave you a temporary password. Enter it as your current password, then pick a new one only you know.</div>
+<?php endif; ?>
 <div class="row g-4">
   <div class="col-lg-6">
     <div class="card h-100"><div class="card-body">
@@ -13,7 +19,7 @@
           <dt class="col-5 text-body-secondary">Last sign-in</dt><dd class="col-7"><?= e(format_datetime($me['last_login_at'])) ?></dd>
           <dt class="col-5 text-body-secondary">Password changed</dt><dd class="col-7"><?= e(format_datetime($me['password_changed_at'])) ?></dd>
         </dl>
-        <button class="btn btn-primary" type="submit">Save profile</button>
+        <button class="btn btn-primary" type="submit"<?= !empty($supportSession) ? ' disabled' : '' ?>>Save profile</button>
       </form>
     </div></div>
   </div>
@@ -22,9 +28,9 @@
       <h2 class="h6 mb-3">Change password</h2>
       <form method="post" action="<?= e(url('account/password')) ?>" class="needs-validation" novalidate data-loading>
         <?= csrf_field() ?>
-        <?= form_input('current_password', 'Current password', '', 'password', ['required' => true, 'autocomplete' => 'current-password']) ?>
+        <?= form_input('current_password', $mustChange ? 'Temporary password' : 'Current password', '', 'password', ['required' => true, 'autocomplete' => 'current-password']) ?>
         <?php include __DIR__ . '/../partials/password_fields.php'; ?>
-        <button class="btn btn-primary" type="submit">Change password</button>
+        <button class="btn btn-primary" type="submit"<?= !empty($supportSession) ? ' disabled' : '' ?>>Change password</button>
         <p class="form-text mt-2">Changing your password signs you out on every other device.</p>
       </form>
     </div></div>

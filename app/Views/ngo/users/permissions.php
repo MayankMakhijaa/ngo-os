@@ -18,7 +18,7 @@ $canEdit = $canManage && $writable;
       <tr class="table-light"><th colspan="4" scope="rowgroup" class="small text-uppercase text-body-secondary"><?= e(humanize($module)) ?></th></tr>
       <?php foreach ($perms as $p): $k = $p['perm_key'];
         $current = $overrides[$k] ?? 'inherit';
-        $modOff = isset($moduleMap[$k]) && !in_array($moduleMap[$k], $modules, true);
+        $modOff = isset($moduleMap[$k]) && !array_intersect((array) $moduleMap[$k], $modules);
         $editable = $canEdit && in_array($k, $delegable, true); ?>
         <tr>
           <td><?= e($p['label']) ?><div class="small text-body-secondary font-monospace"><?= e($k) ?></div>

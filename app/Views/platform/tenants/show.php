@@ -23,6 +23,13 @@ if (can('tenants.manage')) {
         $actions .= $statusForm('deactivated', 'Deactivate', 'btn-outline-danger', 'Deactivate ' . $t['name'] . '? Use this when the NGO has left the platform. Users lose access; records are kept and the NGO can be reactivated later.', true);
     }
 }
+if (can('tenants.impersonate') && $t['status'] === 'active' && !empty($superAdmin)) {
+    $actions .= '<form method="post" action="' . e(url('admin/ngos/' . $t['id'] . '/support-session')) . '"'
+        . ' data-confirm="' . e('Sign in to ' . $t['name'] . ' as its Super Admin, ' . $superAdmin['name'] . ' (' . $superAdmin['email'] . ')? Their password is not used or changed. The session is recorded in the NGO\'s audit log and ends after ' . \App\Services\SupportAccessService::MAX_MINUTES . ' minutes.') . '"'
+        . ' data-confirm-reason="reason" data-confirm-button="Sign in as Super Admin">'
+        . csrf_field() . '<input type="hidden" name="reason" value="">'
+        . '<button type="submit" class="btn btn-primary"><i class="bi bi-box-arrow-in-right me-1" aria-hidden="true"></i>Sign in as Super Admin</button></form>';
+}
 include __DIR__ . '/../../partials/page_header.php';
 $cur = $subscription['currency'] ?? config('app.currency');
 ?>
@@ -40,6 +47,17 @@ $cur = $subscription['currency'] ?? config('app.currency');
     <div class="input-group">
       <input class="form-control font-monospace small" id="inviteLink" value="<?= e($inviteLink) ?>" readonly aria-label="Onboarding link">
       <button class="btn btn-outline-primary" type="button" data-copy="#inviteLink"><i class="bi bi-clipboard me-1" aria-hidden="true"></i>Copy</button>
+    </div>
+  </div>
+<?php endif; ?>
+
+<?php if (!empty($supportSecret)): ?>
+  <div class="alert alert-info">
+    <h2 class="h6"><i class="bi bi-key me-1" aria-hidden="true"></i><?= e($supportSecret['label']) ?></h2>
+    <p class="small mb-2"><?= e($supportSecret['help']) ?></p>
+    <div class="input-group">
+      <input class="form-control font-monospace small" id="supportSecret" value="<?= e($supportSecret['value']) ?>" readonly aria-label="<?= e($supportSecret['label']) ?>">
+      <button class="btn btn-outline-primary" type="button" data-copy="#supportSecret"><i class="bi bi-clipboard me-1" aria-hidden="true"></i>Copy</button>
     </div>
   </div>
 <?php endif; ?>
@@ -216,14 +234,33 @@ $cur = $subscription['currency'] ?? config('app.currency');
   <div class="card">
     <?php if (!$users): ?><?= empty_state('No users') ?><?php else: ?>
     <div class="table-responsive"><table class="table table-hover align-middle mb-0">
-      <thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Last sign-in</th><th scope="col">Created</th></tr></thead>
+      <thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Last sign-in</th><th scope="col">Created</th><?php if (can('tenants.users.reset')): ?><th scope="col"><span class="visually-hidden">Actions</span></th><?php endif; ?></tr></thead>
       <tbody><?php foreach ($users as $u): ?>
         <tr><td><?= e($u['name']) ?><div class="small text-body-secondary"><?= e($u['email']) ?></div></td><td><?= e($u['role_name'] ?? '—') ?></td>
-          <td><?= status_badge($u['status']) ?></td><td class="small"><?= e(time_ago($u['last_login_at'])) ?></td><td class="small"><?= e(format_date($u['created_at'])) ?></td></tr>
+          <td><?= status_badge($u['status']) ?><?= !empty($u['must_change_password']) ? ' <span class="badge text-bg-light border">Must change password</span>' : '' ?></td><td class="small"><?= e(time_ago($u['last_login_at'])) ?></td><td class="small"><?= e(format_date($u['created_at'])) ?></td>
+          <?php if (can('tenants.users.reset')): ?>
+          <td class="text-end">
+            <?php if ($u['status'] !== 'inactive'): $resetUrl = url('admin/ngos/' . $t['id'] . '/users/' . $u['id'] . '/reset'); ?>
+            <div class="dropdown">
+              <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">Reset password</button>
+              <ul class="dropdown-menu dropdown-menu-end shadow-sm">
+                <li><form method="post" action="<?= e($resetUrl) ?>" data-confirm="<?= e('Create a single-use ' . ($u['status'] === 'invited' ? 'invitation' : 'password reset') . ' link for ' . $u['name'] . '? It is emailed to them and shown to you once. Earlier links stop working.') ?>" data-confirm-button="Create link">
+                  <?= csrf_field() ?><input type="hidden" name="mode" value="link">
+                  <button class="dropdown-item" type="submit"><i class="bi bi-link-45deg me-2" aria-hidden="true"></i>Send a reset link</button></form></li>
+                <?php if ($u['status'] === 'active'): ?>
+                <li><form method="post" action="<?= e($resetUrl) ?>" data-confirm="<?= e('Set a temporary password for ' . $u['name'] . '? Their current password stops working, they are signed out everywhere and must choose a new password at their next sign-in. You will see the temporary password once.') ?>" data-confirm-button="Set temporary password">
+                  <?= csrf_field() ?><input type="hidden" name="mode" value="temporary">
+                  <button class="dropdown-item" type="submit"><i class="bi bi-key me-2" aria-hidden="true"></i>Set a temporary password</button></form></li>
+                <?php endif; ?>
+              </ul>
+            </div>
+            <?php endif; ?>
+          </td>
+          <?php endif; ?></tr>
       <?php endforeach; ?></tbody>
     </table></div>
     <?php endif; ?>
-    <div class="card-footer small text-body-secondary">Fameweb can view who has access but cannot sign in as NGO users or change their passwords. Viewing this page is recorded in the audit log.</div>
+    <div class="card-footer small text-body-secondary">Fameweb admins with the right permission can reset these users' passwords and sign in as the NGO Super Admin. Passwords are never emailed or shown in logs, and every reset, support session and page view is recorded in the audit log.</div>
   </div>
 </div>
 

@@ -1,4 +1,4 @@
-# Architecture — Fameweb NGO Cloud, Phase 1
+# Architecture — Fameweb NGO Cloud, Phases 1 and 2
 
 Plain PHP 8.2+ with MySQL/MariaDB (PDO, prepared statements only), Bootstrap 5, Bootstrap Icons and Chart.js served from `public/assets/vendor`. No framework, no Composer packages, no Node.js, no background workers. Everything runs on Hostinger shared hosting.
 
@@ -157,6 +157,7 @@ Standalone tables: `login_attempts` (throttling), `system_settings` (key/value p
 * New users never receive a password by email. They get a single-use link (64 hex chars; only its SHA-256 is stored; consumed atomically; issuing a new link revokes older ones; 72 h for invites, 60 min for resets).
 * Sessions: files in `storage/sessions`, HttpOnly, SameSite=Lax, Secure on HTTPS, strict mode. The id is regenerated at sign-in and sign-out. Idle timeout 30 min and absolute timeout 12 h (configurable).
 * The session holds only `uid`, `session_version` and sign-in time. Every request re-reads the user from the database and rejects the session if the user is inactive, the version changed (password change, deactivation, NGO suspension, email change) or the NGO is not active.
+* Fameweb support access (`SupportAccessService`). A Fameweb admin with `tenants.users.reset` can issue an NGO user a single-use reset link or set a random temporary password (shown once, never emailed or logged) that sets `users.must_change_password`; `AuthMiddleware` then allows only `/account` until the password is changed. With `tenants.impersonate` an admin can start a support session as the NGO's active Super Admin: the session switches to that user (no password involved) and keeps the admin's id and session version under `_impersonator`. `AuthMiddleware` ends it after 60 minutes, or when the admin is deactivated, signs out elsewhere or loses the permission; sign-out ends it too, and "Return to Fameweb" restores the admin's session. Start and end are audited with the NGO's tenant id and the admin as actor, and every action in between carries `support_session_by` in its audit metadata. The NGO user's own profile and password cannot be changed from a support session.
 * Throttling (database-backed, works on shared hosting): 5 failures per email or 30 per IP within 15 minutes lock sign-in. Password-reset requests are rate-limited, and the response never reveals whether an account exists.
 * CSRF: a synchroniser token on every POST (419 on mismatch). Security headers: strict CSP (`script-src 'self'`, no inline scripts), X-Frame-Options DENY, nosniff, Referrer-Policy, HSTS on HTTPS, `no-store` on pages.
 
@@ -204,21 +205,87 @@ Append-only `audit_logs`. Each row stores `prev_hash` and `row_hash = SHA-256(pr
 
 `APP_DEBUG=false` in production: users see a friendly page with a reference id, and the details go to `storage/logs/app-YYYY-MM.log`. Database errors, paths, SQL and stack traces never reach the browser. Logs never contain passwords, tokens or full Aadhaar numbers.
 
-## 9. Future modules (architecture only, not built)
+## 9. Adding modules
 
-Modules are declared in `config/modules.php`. Plans enable modules through `plan_modules`. Permissions map to modules in `config/permissions.php`, and the `module:x` middleware hides and blocks a module that is not on the NGO's plan. Adding a module means:
+Modules are declared in `config/modules.php`. Plans enable modules through `plan_modules`. Permissions map to modules in `config/permissions.php` (a list means "any of these modules"), and the `module:x` middleware (`module:a|b` for either) hides and blocks a module that is not on the NGO's plan. Adding a module means:
 
 1. A new migration file.
 2. Permissions in the catalogue (`php bin/migrate.php` syncs them).
 3. A controller group under `/ngo/<module>` with `module:<key>`.
 4. A usage metric in `UsageService::METRICS` if it is limited.
 
+Still to build:
+
 | Module | Planned design |
 |---|---|
-| Members, volunteers, interns | One `people` table (tenant_id, type, status, contact fields) plus type-specific detail tables. Counts against `max_members` (already on plans and on the usage screen as "not available yet"). Aadhaar, if ever stored, kept encrypted with only the last 4 digits displayed. |
-| Documents | Reuses `storage_objects` (category `document`) and the existing storage limit, private streaming and tenant checks. |
-| Certificates | `certificate_templates` and `certificates` (tenant_id, person_id, serial number unique per tenant, issued_at, revoked_at, file object). Counts against `max_certificates`. |
-| 80G receipts | Kept separate from certificates. The receipt layout and mandatory fields will be taken from the NGO's own 80G approval and current Income-tax rules confirmed by the NGO or its CA; this app will not invent a format. Generated receipts must not be described as legally valid by the software itself. Planned: `donations`, `donation_receipts` (sequential number per tenant per financial year, immutable once issued, cancellation by reversal entry only). |
-| WordPress sync | Per-NGO connection record (site URL plus an application password, encrypted at rest with a key from `.env`). Pull/push is triggered by the user or by cron in small batches (no background workers on shared hosting), with idempotency keys per remote id. |
-| Email automation | `email_templates` and an `email_outbox` table processed by `bin/cron.php` in small batches, using the existing `Mailer` and the already-metered `emails` usage. |
+| WordPress sync | Per-NGO connection record (site URL plus an application password, encrypted with `Crypto`/APP_KEY). Pull registrations into `people` (status pending) by user action or cron in small batches, with idempotency keys per remote id. |
 | Razorpay | Fill the reserved gateway columns. A webhook endpoint verifies the signature and records payments through `SubscriptionService::recordPayment()` with the Razorpay payment id as the idempotency key. |
+
+## 10. Phase 2 modules
+
+Migration `002_phase2_modules.sql` adds 12 tables. Every tenant-owned row has `tenant_id`, and every lookup goes through a `find($tenantId, $id)` helper that returns null (404) for other NGOs.
+
+```mermaid
+erDiagram
+    tenants ||--o{ people : has
+    tenants ||--o{ person_categories : defines
+    person_categories |o--o{ people : groups
+    people ||--o{ person_history : "timeline"
+    people ||--o{ person_documents : uploads
+    person_documents }o--|| storage_objects : "encrypted file"
+    people ||--o{ salary_slips : paid
+    people ||--o{ certificates : receives
+    certificate_templates ||--o{ certificate_template_tenants : "assigned to"
+    tenants ||--o{ certificate_template_tenants : uses
+    certificate_templates |o--o{ certificates : "issued from"
+    tenants ||--o{ donation_receipts : issues
+    tenants |o--o{ email_outbox : sends
+    email_outbox ||--o{ email_attempts : "delivery attempts"
+    tenants ||--o{ tenant_sequences : numbers
+    people {
+        int id PK
+        int tenant_id FK
+        enum person_type "member | volunteer | intern"
+        varchar member_code UK "per tenant: MEM-00001"
+        enum status "pending | active | inactive | completed"
+        char aadhaar_last4 "full number never stored"
+        char bank_account_last4
+        enum verification_status "not_submitted | pending | verified | rejected"
+    }
+    donation_receipts {
+        bigint id PK
+        int tenant_id FK
+        varchar receipt_no UK "RCPT/2026-27/00001"
+        char financial_year
+        int sequence_no "unique per tenant + FY"
+        json ngo_snapshot "name, logo, PAN, 80G no. at issue"
+        tinyint eligible_80g
+        enum status "issued | cancelled"
+        varchar idempotency_key UK
+    }
+    email_outbox {
+        bigint id PK
+        int tenant_id "NULL = platform"
+        mediumtext body_encrypted
+        enum status "queued | sending | sent | failed"
+        tinyint attempts
+        datetime next_attempt_at
+        varchar idempotency_key UK
+    }
+```
+
+**Numbering.** `tenant_sequences (tenant_id, seq_key, next_value)` is incremented with `SELECT … FOR UPDATE` inside the same transaction as the insert, so member IDs, slip numbers, certificate numbers and receipt numbers (keyed per financial year) are gap-free under concurrency, and unique indexes back them up.
+
+**Aadhaar and other identifiers.** The form accepts the 12-digit number only to validate its Verhoeff check digit; only the last 4 digits are stored (`aadhaar_last4`). The card image is an identity document. Bank account numbers keep the last 4 digits too. `Controller::failValidation()` never flashes `aadhaar*`, `bank_account*`, password or token fields back into the session. Audit metadata masks 12-digit numbers. Donor identification for 80G receipts uses PAN or other IDs; Aadhaar is deliberately not offered.
+
+**Encryption at rest.** `App\Support\Crypto` uses libsodium secretbox (or AES-256-GCM via OpenSSL) with a key derived from `APP_KEY`. It encrypts identity documents and member photos (`*.enc` files under `storage/private`), SMTP passwords and queued email bodies. Without APP_KEY, uploads of identity documents and saving SMTP passwords are refused (photos are then stored unencrypted) with a clear message; losing APP_KEY makes those files unreadable, so it must be backed up.
+
+**PDF generation.** `App\Pdf\PdfDocument` is a dependency-free PDF 1.4 writer: the 14 standard fonts (WinAnsi, width tables in `FontMetrics`), text boxes with wrapping and alignment, lines, rectangles and JPEG images (PNG/WebP/GIF converted with GD), compressed with zlib when available. `SalarySlipPdf`, `IdCardPdf`, `CertificatePdf` and `ReceiptPdf` build on it, with the shared letterhead in `Branding`. PDFs are generated on download from stored data, so nothing is cached on disk. Non-Latin text (e.g. Devanagari) is not supported by the standard fonts and is replaced; ₹ prints as "Rs.".
+
+**Certificates.** A template's layout is JSON (page background and frame plus up to 40 positioned elements in millimetres: text with `{{placeholders}}`, NGO logo, line, filled box). `CertificateTemplateService::normalize()` validates and clamps every value on save. The builder (`public/assets/js/certificate-builder.js`, no inline script) renders the same JSON as HTML for the live preview. Templates are visible to an NGO only through `certificate_template_tenants` and only while active; issuing snapshots the layout and the values so later template edits never change issued certificates.
+
+**80G receipts.** Settings live in `tenant_settings` (`r80g_*`). Issuing requires PAN, 80G registration number and signatory, snapshots the NGO details, assigns the next number for the donation's financial year (April–March) and is idempotent per form render. Cash above the configurable limit (Rs. 2,000, section 80G(5D)) and donations in kind are stored with `eligible_80g = 0` and the PDF says so. Receipts are never edited; cancelling keeps the number and marks the PDF CANCELLED. `form10bdRows()` produces the annual statement data for eligible, non-cancelled receipts. The wording is editable per NGO and the UI states that the software does not certify legal validity.
+
+**Email.** `Mailer::send()` (Phase 1 signature) now queues into `email_outbox` and attempts delivery at once through `EmailService::deliver()`, which claims the row (`status = sending`, `locked_until`) so cron and web requests never double-send. Every attempt is stored in `email_attempts` with the server reply (credentials are never included). Temporary failures are retried after 2, 10, 60 and 360 minutes up to `max_attempts` (5); 5xx replies other than authentication failures are permanent. After delivery the stored body is replaced by a redacted copy (64-hex single-use tokens become "[single-use link hidden]"), and `scrubOld()` does the same for older rows. Transports: `log` (development), `mail` (PHP mail()) and `smtp` (`App\Mail\SmtpTransport`, SSL or STARTTLS with certificate verification, AUTH LOGIN/PLAIN). `MailSettings` picks the platform settings (Admin > Email, falling back to `.env`) or, when the NGO has the module and switched it on, the NGO's own SMTP server. Attachments (receipts, certificates) are stored as references and regenerated at send time. Sent emails are metered in the `emails` usage metric.
+
+**Permissions.** New tenant permissions: `people.*`, `salary.*`, `certificates.*`, `receipts.*`, `emails.*`; platform: `certificate_templates.view|manage`, `platform.email.view|manage`. Each is mapped to its module, so switching a module off on the plan removes the permissions and the routes at once.

@@ -67,12 +67,19 @@ DB_DATABASE=u123456789_ngo
 DB_USERNAME=u123456789_ngoapp
 DB_PASSWORD=<the database password>
 SESSION_SECURE_COOKIE=true
-MAIL_DRIVER=mail
+APP_KEY=<output of: php bin/generate-key.php>
+MAIL_DRIVER=smtp
+MAIL_HOST=smtp.hostinger.com
+MAIL_PORT=465
+MAIL_ENCRYPTION=ssl
+MAIL_USERNAME=no-reply@fameweb.in
+MAIL_PASSWORD=<the mailbox password>
 MAIL_FROM_ADDRESS=no-reply@fameweb.in
 ```
 
 * Without SSH, generate the token on any computer with PHP, or use any 48-character random hex string from a password manager.
-* `MAIL_DRIVER=mail` uses PHP `mail()`. Create the `no-reply@` mailbox in hPanel → Emails so messages are not rejected. `MAIL_DRIVER=log` writes emails to `storage/logs/mail.log` instead; use it for staging.
+* `APP_KEY` encrypts identity documents, member photos, SMTP passwords and queued email bodies. **Back it up together with the database**: encrypted files cannot be read without it, and changing it later makes existing encrypted files unreadable.
+* Email: create the `no-reply@` mailbox in hPanel → Emails. The SMTP values can stay out of `.env` and be entered instead in Admin → Email → Settings (the password is then stored encrypted). Send a test email from that page. `MAIL_DRIVER=mail` uses PHP `mail()`; `MAIL_DRIVER=log` writes emails to `storage/logs/mail.log` instead (staging).
 * No secret is ever stored in the code or the database seeds.
 
 ## 5. File permissions
@@ -104,12 +111,12 @@ With SSH you can install from the command line instead: `php bin/install.php "Fu
 
 **Demo data** (staging only): `php bin/seed-demo.php` adds demo plans and NGOs flagged as demo and prints their one-time passwords. `php bin/seed-demo.php --purge` removes them. Both refuse to run when `APP_ENV=production`.
 
-## 7. Cron (optional)
+## 7. Cron (recommended)
 
-The app works without cron because subscription statuses are refreshed whenever they are read. A daily job keeps dashboards accurate for NGOs nobody opens, and cleans old sessions, tokens and login attempts. To set it up, open hPanel → Advanced → Cron Jobs → Custom and use:
+Every email is attempted immediately, but failed deliveries are retried by `bin/cron.php`. Each run delivers emails whose retry time has come; once a day it also refreshes subscription statuses, removes old sessions, tokens and login attempts, and scrubs old email bodies. Without cron the app still works, but automatic email retries do not happen (they can be retried by hand from the email log). Open hPanel → Advanced → Cron Jobs → Custom and use:
 
 ```
-0 2 * * *   /usr/bin/php /home/u123456789/domains/fameweb.in/ngo-saas/bin/cron.php
+*/10 * * * *   /usr/bin/php /home/u123456789/domains/fameweb.in/ngo-saas/bin/cron.php
 ```
 
 ## 8. Verification checklist (after every deployment)

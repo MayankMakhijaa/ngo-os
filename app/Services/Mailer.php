@@ -4,38 +4,46 @@ declare(strict_types=1);
 namespace App\Services;
 
 /**
- * Phase 1 mailer. "log" driver writes to storage/logs/mail.log (no email leaves the server);
- * "mail" uses PHP mail(). Every email sent on behalf of an NGO is metered in usage_records.
+ * Entry point used by the rest of the app to send an email. Everything goes through the
+ * outbox (EmailService): stored, delivered at once, retried by cron when delivery fails,
+ * and visible in the email log. Emails sent on behalf of an NGO are metered as usage.
  */
 final class Mailer
 {
-    public static function send(string $to, string $subject, string $body, ?int $tenantId = null, ?string $idempotencyKey = null): bool
+    /** Returns true when the email was accepted into the outbox (delivered now or queued for retry). */
+    public static function send(string $to, string $subject, string $body, ?int $tenantId = null, ?string $idempotencyKey = null, array $options = []): bool
     {
         $to = trim($to);
         if (!filter_var($to, FILTER_VALIDATE_EMAIL) || preg_match('/[\r\n]/', $to . $subject)) {
             return false;
         }
-        $from = (string) config('mail.from');
-        $fromName = (string) config('mail.from_name');
-        $driver = (string) config('mail.driver', 'log');
-        $ok = false;
-
-        if ($driver === 'mail') {
-            $headers = [
-                'From' => sprintf('%s <%s>', mb_encode_mimeheader($fromName), $from),
-                'MIME-Version' => '1.0',
-                'Content-Type' => 'text/plain; charset=UTF-8',
-                'X-Mailer' => 'FamewebNGO',
-            ];
-            $ok = @mail($to, mb_encode_mimeheader($subject), $body, $headers);
-        } else {
-            $entry = sprintf("==== %s ====\nTo: %s\nFrom: %s <%s>\nSubject: %s\n\n%s\n\n", date('c'), $to, $fromName, $from, $subject, $body);
-            $ok = @file_put_contents(storage_path('logs/mail.log'), $entry, FILE_APPEND | LOCK_EX) !== false;
+        try {
+            $id = EmailService::send([
+                'to' => $to,
+                'to_name' => $options['to_name'] ?? null,
+                'subject' => $subject,
+                'body' => $body,
+                'tenant_id' => $tenantId,
+                'category' => $options['category'] ?? self::categoryFor($idempotencyKey, $subject),
+                'idempotency_key' => $idempotencyKey,
+                'attachments' => $options['attachments'] ?? [],
+                'created_by' => $options['created_by'] ?? (\App\Core\Auth::user()['id'] ?? null),
+            ]);
+            return $id > 0;
+        } catch (\Throwable $e) {
+            \App\Core\ErrorHandler::log($e);
+            return false;
         }
+    }
 
-        if ($ok && $tenantId !== null) {
-            UsageService::record($tenantId, 'emails', 1, $idempotencyKey ?? ('email:' . bin2hex(random_bytes(8))), 'email', null);
-        }
-        return $ok;
+    private static function categoryFor(?string $key, string $subject): string
+    {
+        return match (true) {
+            $key !== null && str_starts_with($key, 'invite-email') => 'invite',
+            $key !== null && str_starts_with($key, 'access-email') => 'access_link',
+            stripos($subject, 'reset') !== false => 'password_reset',
+            stripos($subject, 'invitation') !== false => 'invite',
+            default => 'general',
+        };
     }
 }

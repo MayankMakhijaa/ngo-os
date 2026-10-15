@@ -6,11 +6,36 @@
  */
 $me = auth_user();
 $current = \App\Core\Request::current()?->path ?? '';
+// Keep only links the user may open (permission and plan module), then drop empty sections.
+$nav = [];
+foreach ($shell['nav'] as $item) {
+    if (isset($item['section'])) {
+        $nav[] = $item;
+        continue;
+    }
+    if ((isset($item['perm']) && !can($item['perm'])) || (isset($item['module']) && !in_array($item['module'], $shell['modules'] ?? [], true))) {
+        continue;
+    }
+    $nav[] = $item;
+}
+$nav = array_values(array_filter($nav, static function ($item, $i) use ($nav) {
+    return !isset($item['section']) || (isset($nav[$i + 1]) && !isset($nav[$i + 1]['section']));
+}, ARRAY_FILTER_USE_BOTH));
 ?><!doctype html>
 <html lang="en">
 <head><?php include __DIR__ . '/head.php'; ?></head>
 <body class="app <?= e($shell['theme']) ?>">
 <a class="visually-hidden-focusable skip-link" href="#main">Skip to main content</a>
+<?php if ($support = \App\Services\SupportAccessService::active()):
+  $left = max(0, \App\Services\SupportAccessService::MAX_MINUTES - intdiv(time() - (int) $support['started'], 60)); ?>
+<div class="support-banner d-flex flex-wrap align-items-center gap-2" role="status">
+  <i class="bi bi-person-badge" aria-hidden="true"></i>
+  <span class="me-auto"><strong>Fameweb support session.</strong> <?= e($support['name']) ?> is signed in as <?= e($me['name'] ?? '') ?> (<?= e($shell['brand']) ?>). Everything you do is recorded. Ends in about <?= (int) $left ?> min.</span>
+  <form method="post" action="<?= e(url('support-session/end')) ?>"><?= csrf_field() ?>
+    <button type="submit" class="btn btn-sm btn-light"><i class="bi bi-arrow-return-left me-1" aria-hidden="true"></i>Return to Fameweb</button>
+  </form>
+</div>
+<?php endif; ?>
 <div class="app-wrapper">
   <aside class="sidebar offcanvas-lg offcanvas-start" id="sidebar" tabindex="-1" aria-label="Main navigation">
     <div class="sidebar-brand d-flex align-items-center gap-2">
@@ -27,11 +52,10 @@ $current = \App\Core\Request::current()?->path ?? '';
     </div>
     <nav class="sidebar-nav">
       <ul class="nav flex-column">
-        <?php foreach ($shell['nav'] as $item):
+        <?php foreach ($nav as $item):
           if (isset($item['section'])): ?>
             <li class="nav-section"><?= e($item['section']) ?></li>
           <?php continue; endif;
-          if (isset($item['perm']) && !can($item['perm'])) continue;
           $href = url($item['url']);
           $active = $current === $item['url'] || ($item['url'] !== $shell['home'] && str_starts_with($current, $item['url'] . '/')); ?>
           <li class="nav-item">
@@ -101,5 +125,6 @@ $current = \App\Core\Request::current()?->path ?? '';
 <script src="<?= e(asset('vendor/bootstrap/bootstrap.bundle.min.js')) ?>"></script>
 <?php if (!empty($charts)): ?><script src="<?= e(asset('vendor/chartjs/chart.umd.js')) ?>"></script><?php endif; ?>
 <script src="<?= e(asset('js/app.js')) ?>"></script>
+<?php if (!empty($builder)): ?><script src="<?= e(asset('js/certificate-builder.js')) ?>"></script><?php endif; ?>
 </body>
 </html>

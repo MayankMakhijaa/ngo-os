@@ -72,6 +72,8 @@ final class Auth
     public static function login(array $user): void
     {
         Session::regenerate();
+        // A fresh sign-in never inherits a support session; SupportAccessService::start sets it afterwards.
+        unset($_SESSION['_impersonator']);
         $_SESSION['_auth'] = [
             'uid' => (int) $user['id'],
             'ver' => (int) $user['session_version'],

@@ -35,8 +35,14 @@ $ro = !$editable;
         <?= form_input('notification_email', 'Notification email', $settings['notification_email'], 'email', ['readonly' => $ro]) ?>
         <?= form_select('timezone', 'Time zone', array_combine($timezones, $timezones), $settings['timezone'], ['required' => true]) ?>
         <?= form_select('date_format', 'Date format', ['d M Y' => date('d M Y'), 'd/m/Y' => date('d/m/Y'), 'Y-m-d' => date('Y-m-d'), 'm/d/Y' => date('m/d/Y')], $settings['date_format'], ['required' => true]) ?>
-        <label class="form-label" for="f_primary_color">Brand colour (used by future branded documents)</label>
+        <label class="form-label" for="f_primary_color">Brand colour (ID cards, salary slips, receipts)</label>
         <input type="color" class="form-control form-control-color mb-3" id="f_primary_color" name="primary_color" value="<?= e(old('primary_color', $settings['primary_color'])) ?>"<?= $ro ? ' disabled' : '' ?>>
+        <div class="row g-2">
+          <div class="col-4"><?= form_input('member_id_prefix', 'Member ID prefix', $settings['member_id_prefix'], 'text', ['maxlength' => 10, 'placeholder' => 'MEM', 'readonly' => $ro, 'wrap' => 'mb-0']) ?></div>
+          <div class="col-4"><?= form_input('volunteer_id_prefix', 'Volunteer prefix', $settings['volunteer_id_prefix'], 'text', ['maxlength' => 10, 'placeholder' => 'VOL', 'readonly' => $ro, 'wrap' => 'mb-0']) ?></div>
+          <div class="col-4"><?= form_input('intern_id_prefix', 'Intern prefix', $settings['intern_id_prefix'], 'text', ['maxlength' => 10, 'placeholder' => 'INT', 'readonly' => $ro, 'wrap' => 'mb-0']) ?></div>
+          <div class="col-12 form-text mt-1">IDs look like MEM-00001. A new prefix applies to people registered after the change.</div>
+        </div>
       </div></div>
     </div>
   </div>

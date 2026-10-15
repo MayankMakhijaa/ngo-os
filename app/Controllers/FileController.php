@@ -12,7 +12,9 @@ use App\Services\StorageService;
 
 /**
  * Private file download. Platform admins need tenants.view; NGO users may only fetch files of
- * their own tenant. Any other request gets 404 so file ids cannot be probed.
+ * their own tenant. Identity documents are never served here: they are only available through
+ * the member document routes, which check the documents permission (Fameweb staff cannot open
+ * them at all). Any other request gets 404 so file ids cannot be probed.
  */
 final class FileController extends Controller
 {
@@ -25,12 +27,13 @@ final class FileController extends Controller
             [$this->request->param('uuid')]
         );
         $allowed = false;
-        if ($obj) {
+        $perm = PermissionService::instance();
+        if ($obj && !in_array($obj['category'], ['document', 'photo', 'signature'], true)) {
             if (Auth::isPlatform()) {
-                $allowed = PermissionService::instance()->userHas($user, 'tenants.view');
+                $allowed = $perm->userHas($user, 'tenants.view');
             } else {
                 $allowed = (int) $user['tenant_id'] === (int) $obj['tenant_id'] && $obj['tenant_status'] === 'active'
-                    && ($obj['category'] === 'logo' || PermissionService::instance()->userHas($user, 'organization.view'));
+                    && ($obj['category'] === 'logo' || $perm->userHas($user, 'organization.view'));
             }
         }
         if (!$allowed) {

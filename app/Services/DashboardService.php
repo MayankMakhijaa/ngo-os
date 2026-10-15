@@ -122,6 +122,8 @@ final class DashboardService
             'user.deactivated' => 'Deactivated user', 'user.reactivated' => 'Reactivated user',
             'user.permissions_changed' => 'Changed user permissions', 'user.invite_reissued' => 'Sent new invitation',
             'user.reset_link_issued' => 'Sent password reset link',
+            'support.reset_link_issued' => 'Fameweb sent a password reset link', 'support.temp_password_set' => 'Fameweb set a temporary password',
+            'support.session_started' => 'Fameweb support session started', 'support.session_ended' => 'Fameweb support session ended',
             'role.created' => 'Created role', 'role.updated' => 'Updated role', 'role.deleted' => 'Deleted role',
             'settings.updated' => 'Changed platform settings', 'settings.security_updated' => 'Changed security settings',
             'system.installed' => 'Installed application', 'system.migrated' => 'Applied database upgrade',

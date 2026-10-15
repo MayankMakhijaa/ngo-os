@@ -26,6 +26,7 @@ final class UsageController extends PlatformController
                 'storage' => (int) $db->fetchColumn('SELECT COALESCE(SUM(size_bytes),0) FROM storage_objects WHERE deleted_at IS NULL'),
                 'files' => (int) $db->fetchColumn('SELECT COUNT(*) FROM storage_objects WHERE deleted_at IS NULL'),
                 'emails' => (int) $db->fetchColumn("SELECT COALESCE(SUM(quantity),0) FROM usage_records WHERE metric = 'emails' AND occurred_at >= ?", [date('Y-m-01 00:00:00')]),
+                'members' => (int) $db->fetchColumn("SELECT COUNT(*) FROM people WHERE status IN ('pending','active')"),
             ],
         ]);
     }

@@ -28,6 +28,9 @@ $storage = $root . '/tests/.tmp/storage';
 putenv('APP_ENV_FILE=' . $envFile);
 putenv('STORAGE_PATH=' . $storage);
 putenv('MAIL_DRIVER=log');
+// A throwaway encryption key so documents, SMTP passwords and email bodies are encrypted in tests.
+$appKey = 'base64:' . base64_encode(random_bytes(32));
+putenv('APP_KEY=' . $appKey);
 
 // ---------------------------------------------------------------- fresh storage + database
 function rrmdir(string $dir): void
@@ -202,8 +205,8 @@ $sock = stream_socket_server('tcp://127.0.0.1:0');
 $port = (int) substr((string) stream_socket_get_name($sock, false), strrpos((string) stream_socket_get_name($sock, false), ':') + 1);
 fclose($sock);
 $base = "http://127.0.0.1:$port";
-$cmd = sprintf('APP_ENV_FILE=%s STORAGE_PATH=%s MAIL_DRIVER=log exec %s -S 127.0.0.1:%d -t %s %s',
-    escapeshellarg($envFile), escapeshellarg($storage), escapeshellarg(PHP_BINARY), $port,
+$cmd = sprintf('APP_ENV_FILE=%s STORAGE_PATH=%s MAIL_DRIVER=log APP_KEY=%s exec %s -S 127.0.0.1:%d -t %s %s',
+    escapeshellarg($envFile), escapeshellarg($storage), escapeshellarg($appKey), escapeshellarg(PHP_BINARY), $port,
     escapeshellarg($root . '/public'), escapeshellarg($root . '/public/index.php'));
 $server = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['file', $storage . '/logs/server.log', 'a'], 2 => ['file', $storage . '/logs/server.log', 'a']], $pipes);
 register_shutdown_function(static function () use ($server) { proc_terminate($server); });
@@ -510,7 +513,398 @@ $db->execute('UPDATE audit_logs SET action = ? WHERE id = ?', [$orig, $victim]);
 check('Chain verifies again after restore', AuditLogger::verify() === null);
 check('Admin can export the audit log as CSV', ($c->get('/admin/audit/export')->status === 200) && str_contains($c->body, 'Action'));
 
-// ================================================================= 12. Production error handling
+// ================================================================= 12. Phase 2: members, volunteers, interns
+section('Members, volunteers and interns');
+foreach (['members', 'volunteers', 'interns', 'documents', 'certificates', 'certificates_80g', 'email_automation', 'data_export'] as $m) {
+    $db->insert('plan_modules', ['plan_id' => $planId, 'module_key' => $m]);
+}
+// Beta was left expired by the subscription tests: renew it so it can make changes again.
+$db->execute("UPDATE subscriptions SET status = 'active', end_date = DATE_ADD(CURDATE(), INTERVAL 1 YEAR), trial_ends_at = NULL WHERE id = ?", [$betaSub]);
+$litePlan = $db->insert('subscription_plans', ['name' => 'Test Lite', 'slug' => 'test-lite', 'max_users' => 3, 'status' => 'active']);
+SubscriptionService::flushCache();
+$p2 = new Client($base);
+$p2->login('admin@alpha.test', $pw);
+$p2b = new Client($base);
+$p2b->login('admin@beta.test', $pw);
+check('Members list opens and appears in the menu', $p2->get('/ngo/people/members')->status === 200 && $p2->has('Volunteers'));
+
+/** A valid Aadhaar number (Verhoeff check digit) for tests. */
+$aadhaarFor = static function (string $first11): string {
+    for ($d = 0; $d <= 9; $d++) {
+        if (\App\Support\Aadhaar::isValid($first11 . $d)) {
+            return $first11 . $d;
+        }
+    }
+    throw new RuntimeException('no check digit');
+};
+$aadhaar = $aadhaarFor('23456789012');
+$aadhaarSpaced = substr($aadhaar, 0, 4) . ' ' . substr($aadhaar, 4, 4) . ' ' . substr($aadhaar, 8, 4);
+$badAadhaar = substr($aadhaar, 0, 11) . (((int) substr($aadhaar, -1) + 1) % 10);
+$memberForm = ['name' => 'Ravi Kumar', 'status' => 'active', 'gender' => 'male', 'phone' => '+91 98100 11111', 'email' => 'ravi@member.test',
+    'joined_on' => date('Y-m-d'), 'aadhaar_number' => $aadhaarSpaced, 'bank_account' => '123456789012', 'bank_ifsc' => 'SBIN0001234', 'monthly_amount' => '12000'];
+$p2->post('/ngo/people/members', ['name' => 'Bad Aadhaar', 'status' => 'active', 'aadhaar_number' => $badAadhaar], true, '/ngo/people/members/create');
+check('An Aadhaar number with a wrong check digit is rejected', $p2->redirectsTo('/ngo/people/members/create'));
+$sessionFiles = implode('', array_map('file_get_contents', glob($storage . '/sessions/sess_*') ?: []));
+check('Aadhaar number is not kept in the session after a validation error', !str_contains($sessionFiles, $badAadhaar));
+$p2->visit('/ngo/people/members/create');
+$p2->post('/ngo/people/members', $memberForm, true, '/ngo/people/members/create');
+$m1 = (int) $db->fetchColumn("SELECT id FROM people WHERE tenant_id = ? AND name = 'Ravi Kumar'", [$tA]);
+check('A member is registered and gets member ID MEM-00001', $m1 > 0 && $p2->redirectsTo('/ngo/people/members/' . $m1)
+    && $db->fetchColumn('SELECT member_code FROM people WHERE id = ?', [$m1]) === 'MEM-00001');
+$row = $db->fetch('SELECT * FROM people WHERE id = ?', [$m1]);
+check('Only the last 4 Aadhaar and bank digits are stored', $row['aadhaar_last4'] === substr($aadhaar, -4) && $row['bank_account_last4'] === '9012'
+    && !str_contains(json_encode($row), substr($aadhaar, 0, 8)));
+check('Full Aadhaar number is not in the audit log', !(int) $db->fetchColumn('SELECT COUNT(*) FROM audit_logs WHERE metadata LIKE ? OR metadata LIKE ?', ['%' . $aadhaar . '%', '%' . $aadhaarSpaced . '%']));
+check('Profile shows the masked Aadhaar only', $p2->get('/ngo/people/members/' . $m1)->status === 200 && $p2->has('XXXX XXXX ' . substr($aadhaar, -4)) && !$p2->has($aadhaarSpaced));
+$p2->post('/ngo/people/members', ['name' => 'Second Member', 'status' => 'pending'], true, '/ngo/people/members/create');
+$m2 = (int) $db->fetchColumn("SELECT id FROM people WHERE tenant_id = ? AND name = 'Second Member'", [$tA]);
+check('Member IDs are sequential per NGO', $db->fetchColumn('SELECT member_code FROM people WHERE id = ?', [$m2]) === 'MEM-00002');
+$p2->post('/ngo/people/volunteers', ['name' => 'Asha Volunteer', 'status' => 'active', 'email' => 'asha@vol.test'], true, '/ngo/people/volunteers/create');
+$v1 = (int) $db->fetchColumn("SELECT id FROM people WHERE tenant_id = ? AND name = 'Asha Volunteer'", [$tA]);
+check('Volunteers have their own ID series (VOL-00001)', $db->fetchColumn('SELECT member_code FROM people WHERE id = ?', [$v1]) === 'VOL-00001');
+$p2b->post('/ngo/people/interns', ['name' => 'Beta Intern', 'status' => 'active'], true, '/ngo/people/interns/create');
+check('Each NGO numbers its own people (Beta intern INT-00001)', $db->fetchColumn("SELECT member_code FROM people WHERE tenant_id = ? AND name = 'Beta Intern'", [$tB]) === 'INT-00001');
+check('Another NGO gets 404 for this member', $p2b->get('/ngo/people/members/' . $m1)->status === 404);
+check('A member cannot be opened under another type URL', $p2->get('/ngo/people/volunteers/' . $m1)->status === 404);
+check('Beta cannot change an Alpha member', $p2b->post('/ngo/people/members/' . $m1 . '/status', ['status' => 'inactive'], true, '/ngo/people/interns')->status === 404
+    && $db->fetchColumn('SELECT status FROM people WHERE id = ?', [$m1]) === 'active');
+$db->update('subscriptions', ['plan_id' => $litePlan], ['tenant_id' => $tB, 'is_current' => 1]);
+check('Without the module on the plan the pages are blocked', $p2b->get('/ngo/people/interns')->status === 403);
+$db->update('subscriptions', ['plan_id' => $planId], ['tenant_id' => $tB, 'is_current' => 1]);
+
+$used = UsageService::used($tA, 'members');
+$db->update('subscription_plans', ['max_members' => $used], ['id' => $planId]);
+$p2->post('/ngo/people/members', ['name' => 'Over Limit', 'status' => 'active'], true, '/ngo/people/members/create');
+check('The plan member limit is enforced on the server', !(int) $db->fetchColumn("SELECT COUNT(*) FROM people WHERE name = 'Over Limit'")
+    && $p2->visit('/ngo/people/members/create')->has('allows up to'));
+$p2->post('/ngo/people/members/' . $m2 . '/status', ['status' => 'completed'], true, '/ngo/people/members/' . $m2);
+check('Completed members stop counting towards the limit', UsageService::used($tA, 'members') === $used - 1);
+$db->update('subscription_plans', ['max_members' => $used - 1], ['id' => $planId]);
+$p2->post('/ngo/people/members/' . $m2 . '/status', ['status' => 'pending'], true, '/ngo/people/members/' . $m2);
+check('Reactivating past the limit is refused', $db->fetchColumn('SELECT status FROM people WHERE id = ?', [$m2]) === 'completed');
+$db->update('subscription_plans', ['max_members' => 100], ['id' => $planId]);
+$p2->post('/ngo/people/members/' . $m2 . '/status', ['status' => 'pending'], true, '/ngo/people/members/' . $m2);
+check('Status changes are recorded in the history', (int) $db->fetchColumn("SELECT COUNT(*) FROM person_history WHERE person_id = ? AND event = 'status_changed'", [$m2]) >= 1);
+
+/** Checks that a PDF is structurally sound: header, EOF, and every xref offset points at its object. */
+$pdfOk = static function (string $pdf): bool {
+    if (!str_starts_with($pdf, '%PDF-1.') || !str_contains(substr($pdf, -32), '%%EOF')) {
+        return false;
+    }
+    if (!preg_match('/startxref\s+(\d+)\s+%%EOF\s*$/', $pdf, $m) || substr($pdf, (int) $m[1], 4) !== 'xref') {
+        return false;
+    }
+    if (!preg_match('/xref\s+0 (\d+)\s+((?:\d{10} \d{5} [fn]\s+)+)/', $pdf, $x)) {
+        return false;
+    }
+    preg_match_all('/(\d{10}) \d{5} n/', $x[2], $offsets);
+    foreach ($offsets[1] as $i => $off) {
+        if (!preg_match('/^' . ($i + 1) . ' 0 obj/', substr($pdf, (int) $off, 20))) {
+            return false;
+        }
+    }
+    return count($offsets[1]) === (int) $x[1] - 1;
+};
+
+/** Text of a PDF's (compressed) content streams, for content checks. */
+$pdfText = static function (string $pdf): string {
+    preg_match_all('/stream\r?\n(.*?)\r?\nendstream/s', $pdf, $m);
+    return implode("\n", array_map(static fn ($st) => (string) (@gzuncompress($st) ?: $st), $m[1]));
+};
+
+// Identity documents (multipart upload through curl).
+$upload = static function (Client $cl, string $path, array $fields, string $file, string $mime, string $name, string $csrfFrom, string $field = 'document') use ($base): array {
+    $fields['_csrf'] = $cl->csrf($csrfFrom);
+    $jarProp = (new ReflectionClass($cl))->getProperty('jar');
+    $jar = $jarProp->getValue($cl);
+    $ch = curl_init($base . $path);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true, CURLOPT_COOKIEJAR => $jar, CURLOPT_COOKIEFILE => $jar,
+        CURLOPT_POST => true, CURLOPT_POSTFIELDS => $fields + [$field => new CURLFile($file, $mime, $name)]]);
+    $raw = (string) curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+    return [$status, $raw];
+};
+$docPdf = new \App\Pdf\PdfDocument();
+$docPdf->addPage();
+$docPdf->setFont('helvetica', '', 12);
+$docPdf->text(20, 30, 'AADHAAR TEST DOCUMENT');
+$tmpDoc = tempnam(sys_get_temp_dir(), 'doc') . '.pdf';
+file_put_contents($tmpDoc, $docPdf->output());
+[$st] = $upload($p2, '/ngo/people/members/' . $m1 . '/documents', ['doc_type' => 'aadhaar', 'title' => 'Front'], $tmpDoc, 'application/pdf', 'aadhaar.pdf', '/ngo/people/members/' . $m1);
+$doc = $db->fetch('SELECT d.*, s.stored_path, s.uuid FROM person_documents d JOIN storage_objects s ON s.id = d.storage_object_id WHERE d.person_id = ?', [$m1]);
+check('Aadhaar document uploads', $st === 302 && $doc !== null);
+$stored = $doc ? (string) @file_get_contents($storage . '/private/' . $doc['stored_path']) : '';
+check('The document is encrypted on disk', $doc && str_ends_with($doc['stored_path'], '.enc') && $stored !== '' && !str_contains($stored, '%PDF') && !str_contains($stored, 'AADHAAR TEST'));
+check('Uploading the Aadhaar card sets verification to pending', $db->fetchColumn('SELECT verification_status FROM people WHERE id = ?', [$m1]) === 'pending');
+$p2->get('/ngo/people/members/' . $m1 . '/documents/' . ($doc['id'] ?? 0));
+check('The NGO downloads the decrypted document', $p2->status === 200 && str_starts_with($p2->body, '%PDF') && str_contains($pdfText($p2->body), 'AADHAAR TEST'));
+check('Another NGO cannot download it', $p2b->get('/ngo/people/members/' . $m1 . '/documents/' . ($doc['id'] ?? 0))->status === 404);
+check('Documents are not reachable through the generic file URL', in_array($p2->get('/files/' . ($doc['uuid'] ?? ''))->status, [403, 404], true));
+$p2->post('/ngo/people/members/' . $m1 . '/verify', ['decision' => 'rejected', 'note' => ''], true, '/ngo/people/members/' . $m1);
+check('Rejecting needs a reason', $db->fetchColumn('SELECT verification_status FROM people WHERE id = ?', [$m1]) === 'pending');
+$p2->post('/ngo/people/members/' . $m1 . '/verify', ['decision' => 'verified', 'note' => 'Matches card'], true, '/ngo/people/members/' . $m1);
+check('Aadhaar verification is recorded', $db->fetchColumn('SELECT verification_status FROM people WHERE id = ?', [$m1]) === 'verified');
+
+$photo = imagecreatetruecolor(60, 80);
+imagefill($photo, 0, 0, imagecolorallocate($photo, 200, 120, 60));
+$photoFile = $storage . '/photo.png';
+imagepng($photo, $photoFile);
+[$st] = $upload($p2, '/ngo/people/members/' . $m1 . '/photo', [], $photoFile, 'image/png', 'photo.png', '/ngo/people/members/' . $m1, 'photo');
+$photoPath = (string) $db->fetchColumn('SELECT s.stored_path FROM people p JOIN storage_objects s ON s.id = p.photo_object_id WHERE p.id = ?', [$m1]);
+check('Member photo is stored encrypted', $st === 302 && str_ends_with($photoPath, '.enc'));
+check('The photo is shown to the NGO and not to others', str_starts_with($p2->get('/ngo/people/members/' . $m1 . '/photo')->body, "\x89PNG")
+    && $p2b->get('/ngo/people/members/' . $m1 . '/photo')->status === 404);
+$p2->get('/ngo/people/members/' . $m1 . '/id-card');
+check('ID card downloads as a valid PDF', $p2->status === 200 && $pdfOk($p2->body));
+check('ID cards are refused for pending people', $p2->get('/ngo/people/members/' . $m2 . '/id-card')->status === 302);
+
+$slipFields = ['period_month' => date('Y-m', strtotime('first day of last month')), 'pay_type' => 'salary', 'payment_mode' => 'bank_transfer',
+    'earning_label' => ['Basic pay', 'HRA', ''], 'earning_amount' => ['12000', '3000', ''], 'deduction_label' => ['Professional tax'], 'deduction_amount' => ['200']];
+$p2->post('/ngo/people/members/' . $m1 . '/salary-slips', $slipFields, true, '/ngo/people/members/' . $m1 . '/salary-slips/create');
+$slip = $db->fetch('SELECT * FROM salary_slips WHERE person_id = ?', [$m1]);
+check('Salary slip is created with correct totals', $slip && (float) $slip['gross_amount'] === 15000.0 && (float) $slip['net_amount'] === 14800.0);
+$p2->get('/ngo/salary-slips/' . ($slip['id'] ?? 0) . '/pdf');
+check('Salary slip downloads as a valid PDF', $p2->status === 200 && $pdfOk($p2->body));
+$p2->post('/ngo/people/members/' . $m1 . '/salary-slips', $slipFields, true, '/ngo/people/members/' . $m1 . '/salary-slips/create');
+check('A second slip for the same month is refused', (int) $db->fetchColumn('SELECT COUNT(*) FROM salary_slips WHERE person_id = ?', [$m1]) === 1);
+check('Another NGO cannot download the slip', $p2b->get('/ngo/salary-slips/' . ($slip['id'] ?? 0) . '/pdf')->status === 404);
+check('People export is a CSV with masked Aadhaar', $p2->get('/ngo/people/members/export')->status === 200 && str_contains($p2->body, 'XXXX XXXX ' . substr($aadhaar, -4)) && !str_contains($p2->body, $aadhaar));
+
+// ================================================================= 13. Certificates
+section('Certificates');
+$preset = \App\Services\CertificateTemplateService::presets()['appreciation'];
+$tplFields = ['name' => 'Test Appreciation', 'orientation' => 'landscape', 'status' => 'active', 'page_background' => '#ffffff', 'page_border' => 'double',
+    'page_border_color' => '#8a6d1f', 'tenant_ids' => [$tA]];
+foreach ($preset['layout']['elements'] as $el) {
+    foreach (['type', 'text', 'x', 'y', 'w', 'h', 'size', 'font', 'style', 'align', 'color'] as $k) {
+        $tplFields['el_' . $k][] = (string) ($el[$k] ?? '');
+    }
+}
+check('Template builder opens with a preset', $c->get('/admin/certificate-templates/create?preset=appreciation')->status === 200 && $c->has('Live preview'));
+$c->post('/admin/certificate-templates', $tplFields, true, '/admin/certificate-templates/create');
+$tplId = (int) $db->fetchColumn("SELECT id FROM certificate_templates WHERE name = 'Test Appreciation'");
+check('Fameweb creates a template and assigns it to one NGO', $tplId > 0 && \App\Services\CertificateTemplateService::assignedTenantIds($tplId) === [$tA]);
+$c->get('/admin/certificate-templates/' . $tplId . '/preview');
+check('Template PDF preview is valid', $c->status === 200 && $pdfOk($c->body));
+check('NGOs cannot open the template builder', $p2->get('/admin/certificate-templates')->status === 403);
+check('The assigned NGO sees the template', $p2->get('/ngo/certificates/create')->has('Test Appreciation'));
+check('Other NGOs do not see it', !$p2b->get('/ngo/certificates/create')->has('Test Appreciation'));
+$p2b->post('/ngo/certificates', ['person_id' => (string) $db->fetchColumn("SELECT id FROM people WHERE tenant_id = ? AND name = 'Beta Intern'", [$tB]),
+    'template_id' => $tplId, 'title' => 'Hack'], true, '/ngo/certificates/create');
+check('Other NGOs cannot issue from it', !(int) $db->fetchColumn('SELECT COUNT(*) FROM certificates WHERE tenant_id = ?', [$tB]));
+$p2->post('/ngo/certificates', ['person_id' => $m2, 'template_id' => $tplId, 'title' => 'Certificate of Appreciation'], true, '/ngo/certificates/create');
+check('Certificates are refused for people pending approval', !(int) $db->fetchColumn('SELECT COUNT(*) FROM certificates WHERE person_id = ?', [$m2]));
+$p2->post('/ngo/certificates', ['person_id' => $m1, 'template_id' => $tplId, 'title' => 'Certificate of Appreciation', 'description' => 'for the health camp',
+    'issued_on' => date('Y-m-d')], true, '/ngo/certificates/create');
+$cert = $db->fetch('SELECT * FROM certificates WHERE person_id = ?', [$m1]);
+check('Certificate is issued with a number', $cert && $cert['certificate_no'] === 'CERT-' . date('Y') . '-00001');
+$p2->get('/ngo/certificates/' . ($cert['id'] ?? 0) . '/pdf');
+check('Certificate PDF is valid and filled in', $p2->status === 200 && $pdfOk($p2->body) && str_contains($pdfText($p2->body), 'Ravi Kumar'));
+check('Another NGO cannot download it', $p2b->get('/ngo/certificates/' . ($cert['id'] ?? 0) . '/pdf')->status === 404);
+check('Issued certificates count as usage', UsageService::used($tA, 'certificates') === 1);
+$db->update('subscription_plans', ['max_certificates' => 1], ['id' => $planId]);
+$p2->post('/ngo/certificates', ['person_id' => $v1, 'template_id' => $tplId, 'title' => 'Second'], true, '/ngo/certificates/create');
+check('The plan certificate limit is enforced', (int) $db->fetchColumn('SELECT COUNT(*) FROM certificates WHERE tenant_id = ?', [$tA]) === 1);
+$db->update('subscription_plans', ['max_certificates' => null], ['id' => $planId]);
+$p2->post('/ngo/certificates/' . ($cert['id'] ?? 0) . '/revoke', ['reason' => 'Issued in error'], true, '/ngo/certificates');
+check('Certificates can be revoked with a reason', $db->fetchColumn('SELECT status FROM certificates WHERE id = ?', [$cert['id'] ?? 0]) === 'revoked');
+$tplLayout = (string) $db->fetchColumn('SELECT layout FROM certificate_templates WHERE id = ?', [$tplId]);
+$c->post('/admin/certificate-templates/' . $tplId . '/toggle', [], true, '/admin/certificate-templates');
+check('A deactivated template disappears for the NGO', !$p2->get('/ngo/certificates/create')->has('Test Appreciation'));
+$c->post('/admin/certificate-templates/' . $tplId . '/toggle', [], true, '/admin/certificate-templates');
+
+// ================================================================= 14. 80G receipts
+section('80G receipts');
+$p2->post('/ngo/receipts', ['donor_name' => 'Early', 'donor_address' => 'x', 'amount' => '100', 'donation_date' => date('Y-m-d'), 'payment_mode' => 'cash',
+    'donor_id_type' => 'none', 'form_key' => bin2hex(random_bytes(16))], true, '/ngo/receipts');
+check('Receipts need the 80G settings first', !(int) $db->fetchColumn('SELECT COUNT(*) FROM donation_receipts'));
+$p2->post('/ngo/receipts/settings', ['r80g_pan' => 'AAATA1234A', 'r80g_reg_no' => 'AAATA1234AF20214', 'r80g_valid_from' => '2021-04-01', 'r80g_valid_to' => '2026-03-31',
+    'r80g_signatory_name' => 'R. Mehta', 'r80g_signatory_designation' => 'Treasurer', 'r80g_prefix' => 'RCPT', 'r80g_cash_limit' => '2000', 'r80g_show_logo' => '1',
+    'r80g_title' => 'Donation Receipt', 'r80g_subtitle' => '', 'r80g_declaration' => '', 'r80g_footer' => ''], true, '/ngo/receipts/settings');
+check('80G settings are saved', \App\Services\ReceiptService::missingSettings(\App\Services\ReceiptService::settings($tA)) === []);
+$p2->get('/ngo/receipts/settings/preview');
+check('Sample receipt preview is a valid PDF', $p2->status === 200 && $pdfOk($p2->body) && str_contains($pdfText($p2->body), 'SAMPLE'));
+$key = bin2hex(random_bytes(16));
+$donation = ['donor_name' => 'Meera Shah', 'donor_address' => '9 Lake Road, Pune 411001', 'donor_email' => 'meera@donor.test', 'donor_id_type' => 'pan',
+    'donor_id_number' => 'ABCPS1234K', 'amount' => '5000', 'donation_date' => date('Y-m-d'), 'payment_mode' => 'upi', 'payment_reference' => 'UPI12345',
+    'donation_type' => 'others', 'purpose' => 'Education', 'form_key' => $key];
+$fy = \App\Services\ReceiptService::financialYear(date('Y-m-d'));
+$p2->post('/ngo/receipts', $donation, true, '/ngo/receipts/create');
+$r1 = $db->fetch('SELECT * FROM donation_receipts WHERE tenant_id = ? ORDER BY id LIMIT 1', [$tA]);
+check('Receipt is issued with a financial-year number', $r1 && $r1['receipt_no'] === 'RCPT/' . $fy . '/00001' && (int) $r1['eligible_80g'] === 1);
+$p2->post('/ngo/receipts', $donation, true, '/ngo/receipts/create');
+check('Submitting the same form twice does not create a second receipt', (int) $db->fetchColumn('SELECT COUNT(*) FROM donation_receipts WHERE tenant_id = ?', [$tA]) === 1);
+$p2->get('/ngo/receipts/' . ($r1['id'] ?? 0) . '/pdf');
+check('Receipt PDF is valid and shows the 80G details', $p2->status === 200 && $pdfOk($p2->body) && str_contains($pdfText($p2->body), 'AAATA1234A') && str_contains($pdfText($p2->body), 'Five Thousand'));
+check('Another NGO cannot open the receipt', $p2b->get('/ngo/receipts/' . ($r1['id'] ?? 0))->status === 404 && $p2b->get('/ngo/receipts/' . ($r1['id'] ?? 0) . '/pdf')->status === 404);
+$p2->post('/ngo/receipts', ['form_key' => bin2hex(random_bytes(16)), 'payment_mode' => 'cash', 'amount' => '5000', 'payment_reference' => ''] + $donation, true, '/ngo/receipts/create');
+$cashId = (int) $db->fetchColumn('SELECT MAX(id) FROM donation_receipts WHERE tenant_id = ?', [$tA]);
+check('Cash above Rs. 2,000 is marked not eligible for 80G', (int) $db->fetchColumn('SELECT eligible_80g FROM donation_receipts WHERE id = ?', [$cashId]) === 0);
+$p2->post('/ngo/receipts', ['form_key' => bin2hex(random_bytes(16)), 'payment_mode' => 'kind', 'amount' => '800', 'payment_reference' => ''] + $donation, true, '/ngo/receipts/create');
+$kindId = (int) $db->fetchColumn('SELECT MAX(id) FROM donation_receipts WHERE tenant_id = ?', [$tA]);
+check('Donations in kind are marked not eligible', $kindId !== $cashId && (int) $db->fetchColumn('SELECT eligible_80g FROM donation_receipts WHERE id = ?', [$kindId]) === 0);
+$lastFyDate = (date('n') >= 4 ? date('Y') - 1 : date('Y') - 2) . '-06-15';
+$p2->post('/ngo/receipts', ['form_key' => bin2hex(random_bytes(16)), 'donation_date' => $lastFyDate] + $donation, true, '/ngo/receipts/create');
+check('Each financial year has its own number series', $db->fetchColumn('SELECT receipt_no FROM donation_receipts WHERE tenant_id = ? AND donation_date = ?', [$tA, $lastFyDate])
+    === 'RCPT/' . \App\Services\ReceiptService::financialYear($lastFyDate) . '/00001');
+$p2->post('/ngo/receipts', ['form_key' => bin2hex(random_bytes(16)), 'donor_id_number' => 'NOTAPAN'] + $donation, true, '/ngo/receipts/create');
+check('An invalid donor PAN is rejected', !(int) $db->fetchColumn("SELECT COUNT(*) FROM donation_receipts WHERE donor_id_number = 'NOTAPAN'"));
+$p2->post('/ngo/receipts/' . $cashId . '/cancel', ['reason' => 'Wrong amount'], true, '/ngo/receipts/' . $cashId);
+check('A receipt can be cancelled and keeps its number', $db->fetchColumn('SELECT status FROM donation_receipts WHERE id = ?', [$cashId]) === 'cancelled');
+$p2->get('/ngo/receipts/export?fy=' . $fy);
+check('Form 10BD export lists eligible receipts only', $p2->status === 200 && str_contains($p2->body, 'RCPT/' . $fy . '/00001') && str_contains($p2->body, 'ABCPS1234K')
+    && !str_contains($p2->body, (string) $db->fetchColumn('SELECT receipt_no FROM donation_receipts WHERE id = ?', [$kindId]))
+    && !str_contains($p2->body, (string) $db->fetchColumn('SELECT receipt_no FROM donation_receipts WHERE id = ?', [$cashId])));
+check('Receipts count as usage', UsageService::used($tA, 'invoices') === 4);
+
+// ================================================================= 15. Email automation
+section('Email automation');
+$smtpPort = (int) substr((string) stream_socket_get_name($s1 = stream_socket_server('tcp://127.0.0.1:0'), false), strrpos((string) stream_socket_get_name($s1, false), ':') + 1);
+fclose($s1);
+$smtpOut = $storage . '/logs/fake-smtp.txt';
+$startSmtp = static function (int $port, int $failFirst) use ($root, $smtpOut) {
+    $proc = proc_open([PHP_BINARY, $root . '/tests/fixtures/fake_smtp.php', (string) $port, $smtpOut, (string) $failFirst], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pp);
+    for ($i = 0; $i < 50 && !@fsockopen('127.0.0.1', $port); $i++) {
+        usleep(100000);
+    }
+    return $proc;
+};
+$smtp = $startSmtp($smtpPort, 1);
+$c->post('/admin/emails/settings', ['mail_driver' => 'smtp', 'smtp_host' => '127.0.0.1', 'smtp_port' => (string) $smtpPort, 'smtp_encryption' => 'none',
+    'smtp_username' => 'mailer@fameweb.test', 'smtp_pass' => 'Smtp-Secret-123', 'mail_from_address' => 'no-reply@fameweb.test', 'mail_from_name' => 'Fameweb'], true, '/admin/emails/settings');
+check('SMTP password is stored encrypted', ($enc = (string) $db->fetchColumn("SELECT setting_value FROM system_settings WHERE setting_key = 'smtp_password_enc'")) !== '' && !str_contains($enc, 'Smtp-Secret-123')
+    && str_starts_with($enc, 'v1'));
+check('Email settings page never shows the saved password', !$c->get('/admin/emails/settings')->has('Smtp-Secret-123'));
+$r2 = new Client($base);
+$r2->post('/forgot-password', ['email' => 'admin@beta.test'], true, '/forgot-password');
+$reset = $db->fetch("SELECT * FROM email_outbox WHERE to_email = 'admin@beta.test' ORDER BY id DESC LIMIT 1");
+check('A temporary SMTP failure (451) leaves the email queued for retry', $reset && $reset['status'] === 'queued' && (int) $reset['attempts'] === 1
+    && $reset['next_attempt_at'] > date('Y-m-d H:i:s') && str_contains((string) $reset['last_error'], '451'));
+$db->update('email_outbox', ['next_attempt_at' => date('Y-m-d H:i:s', time() - 5)], ['id' => (int) ($reset['id'] ?? 0)]);
+\App\Services\SettingsService::flush(); // the admin changed the settings through the web server
+$due = \App\Services\EmailService::processDue();
+$reset = $db->fetch('SELECT * FROM email_outbox WHERE id = ?', [(int) ($reset['id'] ?? 0)]);
+check('The cron run retries and delivers it over SMTP', $due['sent'] >= 1 && $reset['status'] === 'sent' && $reset['transport'] === 'smtp' && (int) $db->fetchColumn('SELECT COUNT(*) FROM email_attempts WHERE outbox_id = ?', [$reset['id']]) === 2);
+$received = quoted_printable_decode((string) @file_get_contents($smtpOut));
+check('The password reset email really went out with its link', preg_match('#/reset-password/[a-f0-9]{64}#', $received) === 1);
+preg_match('#/reset-password/([a-f0-9]{64})#', $received, $tok);
+check('The single-use token is removed from the stored copy after delivery', isset($tok[1]) && !str_contains(\App\Services\EmailService::displayBody($reset), $tok[1])
+    && !str_contains((string) $db->fetchColumn('SELECT body_encrypted FROM email_outbox WHERE id = ?', [$reset['id']]), $tok[1]));
+check('The email log shows the attempts but not the token', $c->get('/admin/emails/' . $reset['id'])->status === 200 && $c->has('451') && !$c->has($tok[1] ?? 'x'));
+check('SMTP credentials never appear in attempts or logs', !(int) $db->fetchColumn("SELECT COUNT(*) FROM email_attempts WHERE response LIKE '%Smtp-Secret%'")
+    && !str_contains((string) @file_get_contents($storage . '/logs/server.log'), 'Smtp-Secret'));
+$p2->post('/ngo/certificates', ['person_id' => $v1, 'template_id' => $tplId, 'title' => 'Volunteer of the Month'], true, '/ngo/certificates/create');
+$cert2 = (int) $db->fetchColumn('SELECT id FROM certificates WHERE person_id = ?', [$v1]);
+$p2->post('/ngo/certificates/' . $cert2 . '/email', [], true, '/ngo/certificates');
+$certMail = $db->fetch("SELECT * FROM email_outbox WHERE category = 'certificate' AND tenant_id = ? ORDER BY id DESC LIMIT 1", [$tA]);
+check('A certificate is emailed with its PDF attached', $certMail && $certMail['status'] === 'sent' && str_contains((string) @file_get_contents($smtpOut), 'application/pdf'));
+check('NGO email log shows its own emails', $p2->get('/ngo/emails')->status === 200 && $p2->has('asha@vol.test'));
+check('Other NGOs cannot open it', $p2b->get('/ngo/emails/' . ($certMail['id'] ?? 0))->status === 404);
+check('Platform log lists emails from all NGOs', $c->get('/admin/emails')->status === 200 && $c->has('asha@vol.test') && $c->has('admin@beta.test'));
+$p2->post('/ngo/emails/settings', ['auto_receipt_donor' => '1', 'auto_member_welcome' => '1', 'mail_smtp_port' => '587', 'mail_smtp_encryption' => 'tls'], true, '/ngo/emails/settings');
+$p2->post('/ngo/people/members', ['name' => 'Welcome Test', 'status' => 'active', 'email' => 'welcome@member.test'], true, '/ngo/people/members/create');
+check('Automatic welcome email is sent with the member ID', (int) $db->fetchColumn("SELECT COUNT(*) FROM email_outbox WHERE category = 'member_welcome' AND to_email = 'welcome@member.test' AND status = 'sent'") === 1
+    && str_contains((string) @file_get_contents($smtpOut), 'MEM-0000'));
+proc_terminate($smtp);
+$p2->post('/ngo/receipts', ['form_key' => bin2hex(random_bytes(16))] + $donation, true, '/ngo/receipts/create');
+$downMail = $db->fetch("SELECT * FROM email_outbox WHERE category = 'receipt' ORDER BY id DESC LIMIT 1");
+check('When the mail server is down the receipt is still issued and the email waits for retry', $downMail && $downMail['status'] === 'queued'
+    && (int) $db->fetchColumn('SELECT COUNT(*) FROM donation_receipts WHERE tenant_id = ?', [$tA]) === 5);
+$smtp = $startSmtp($smtpPort, 0);
+$p2->post('/ngo/emails/' . $downMail['id'] . '/retry', [], true, '/ngo/emails/' . $downMail['id']);
+check('A manual retry from the email log delivers it', $db->fetchColumn('SELECT status FROM email_outbox WHERE id = ?', [$downMail['id']]) === 'sent');
+proc_terminate($smtp);
+\App\Services\MailSettings::savePlatform(['mail_driver' => 'log', 'smtp_host' => '', 'smtp_port' => '', 'smtp_encryption' => '', 'smtp_username' => '',
+    'mail_from_address' => '', 'mail_from_name' => ''], '', $admin);
+$logs = (string) @file_get_contents($storage . '/logs/server.log') . implode('', array_map('file_get_contents', glob($storage . '/logs/*.log') ?: []));
+check('Full Aadhaar numbers never reach any log', !str_contains($logs, $aadhaar) && !str_contains($logs, $aadhaarSpaced));
+
+// ================================================================= 16. Fameweb support access
+section('Fameweb support access (password reset, sign in as NGO Super Admin)');
+$betaAdminId = $userIdByEmail('admin@beta.test');
+$supportId = $db->insert('users', ['user_type' => 'platform', 'name' => 'Support Agent', 'email' => 'support@fameweb.test', 'status' => 'active']);
+$db->insert('user_roles', ['user_id' => $supportId, 'role_id' => (int) $db->fetchColumn("SELECT id FROM roles WHERE tenant_id IS NULL AND slug = 'fameweb_support'"), 'is_primary' => 1]);
+PasswordService::setPassword($supportId, $pw);
+$sup = new Client($base);
+$sup->login('support@fameweb.test', $pw);
+check('Support admins see neither action on the NGO page', $sup->get('/admin/ngos/' . $tB)->status === 200 && !$sup->has('Sign in as Super Admin') && !$sup->has('Set a temporary password'));
+check('Support admins cannot start a support session (403)', $sup->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'x'], true, '/admin')->status === 403);
+check('Support admins cannot reset NGO passwords (403)', $sup->post('/admin/ngos/' . $tB . '/users/' . $betaAdminId . '/reset', ['mode' => 'temporary'], true, '/admin')->status === 403);
+check('NGO users cannot reach either action (403)', $p2b->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'x'], true, '/ngo')->status === 403
+    && $p2b->post('/admin/ngos/' . $tA . '/users/' . $userIdByEmail('admin@alpha.test') . '/reset', ['mode' => 'link'], true, '/ngo')->status === 403);
+check('Fameweb Super Admin sees both actions', $c->get('/admin/ngos/' . $tB)->status === 200 && $c->has('Sign in as Super Admin') && $c->has('Set a temporary password'));
+
+$before = $db->fetch('SELECT password_hash, last_login_at, session_version FROM users WHERE id = ?', [$betaAdminId]);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => ''], true, '/admin/ngos/' . $tB);
+check('A reason is required to sign in as the NGO', $c->redirectsTo('/admin/ngos/' . $tB) && $c->get('/admin')->status === 200);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Ticket 42: help with receipts'], true, '/admin/ngos/' . $tB);
+check('Sign in as Super Admin lands in the NGO workspace', $c->redirectsTo('/ngo') && $c->get('/ngo')->status === 200);
+check('A support-session banner with a return button is shown', $c->has('Fameweb support session') && $c->has('Return to Fameweb') && $c->has('Beta Admin'));
+check('The Fameweb panel is closed while signed in as the NGO', $c->get('/admin')->status === 403);
+$started = $db->fetch("SELECT * FROM audit_logs WHERE action = 'support.session_started' ORDER BY id DESC LIMIT 1");
+check('The start is audited in the NGO log with the admin and reason', $started && (int) $started['tenant_id'] === $tB && (int) $started['actor_user_id'] === $adminId
+    && $started['actor_type'] === 'platform' && str_contains((string) $started['metadata'], 'Ticket 42'));
+$c->post('/ngo/people/members', ['name' => 'Added By Support', 'status' => 'active'], true, '/ngo/people/members/create');
+check('Actions in the session name the Fameweb admin in the audit log', (int) $db->fetchColumn(
+    "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ? AND id > ? AND metadata LIKE ?", [$tB, (int) $started['id'], '%"support_session_by":' . $adminId . '%']) > 0);
+$c->post('/account/password', ['current_password' => 'x', 'password' => 'An0ther-pass-1', 'password_confirmation' => 'An0ther-pass-1'], true, '/account');
+$after = $db->fetch('SELECT password_hash, last_login_at, session_version FROM users WHERE id = ?', [$betaAdminId]);
+check('The NGO user\'s password and sign-in record are untouched', $c->redirectsTo('/account') && $before == $after);
+check('The NGO user\'s own session keeps working', $p2b->get('/ngo')->status === 200);
+$c->post('/support-session/end', [], true, '/ngo');
+check('Return to Fameweb restores the admin session', $c->redirectsTo('/admin/ngos/' . $tB) && $c->get('/admin')->status === 200 && !$c->has('Return to Fameweb'));
+check('The end is audited', (int) $db->fetchColumn("SELECT COUNT(*) FROM audit_logs WHERE action = 'support.session_ended' AND tenant_id = ? AND actor_user_id = ? AND metadata LIKE '%returned%'", [$tB, $adminId]) === 1);
+check('The NGO sees the session in its own audit log', $p2b->get('/ngo/audit')->status === 200 && $p2b->has('Fameweb support session started') && $p2b->has('Fameweb support session ended'));
+
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Expiry test'], true, '/admin/ngos/' . $tB);
+$file = $storage . '/sessions/sess_' . $c->sessionId();
+file_put_contents($file, preg_replace('/s:7:"started";i:\d+;/', 's:7:"started";i:' . (time() - 4000) . ';', (string) file_get_contents($file)));
+check('Support sessions end automatically after the time limit', $c->get('/ngo')->redirectsTo('/admin') && $c->get('/admin')->status === 200
+    && (int) $db->fetchColumn("SELECT COUNT(*) FROM audit_logs WHERE action = 'support.session_ended' AND metadata LIKE '%expired%'") === 1);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Sign-out test'], true, '/admin/ngos/' . $tB);
+$c->logout();
+check('Signing out ends the support session and the admin session', $c->get('/admin')->redirectsTo('/login')
+    && (int) $db->fetchColumn("SELECT COUNT(*) FROM audit_logs WHERE action = 'support.session_ended' AND metadata LIKE '%signed_out%'") === 1);
+$c->login('admin@fameweb.test', $adminPass);
+TenantService::changeStatus($tB, 'suspended', 'Support test', $admin);
+$c->post('/admin/ngos/' . $tB . '/support-session', ['reason' => 'Suspended test'], true, '/admin/ngos/' . $tB);
+check('A suspended NGO cannot be signed in to', $c->redirectsTo('/admin/ngos/' . $tB) && $c->get('/admin')->status === 200);
+TenantService::changeStatus($tB, 'active', 'Support test over', $admin);
+
+// Password reset by Fameweb
+$c->post('/admin/ngos/' . $tB . '/users/' . $betaAdminId . '/reset', ['mode' => 'link'], true, '/admin/ngos/' . $tB);
+$c->follow();
+check('A single-use reset link is shown once to the admin', preg_match('#/reset-password/([a-f0-9]{64})#', html_entity_decode($c->body), $lm) === 1
+    && !$c->get('/admin/ngos/' . $tB)->has($lm[1]));
+check('The reset link is stored hashed and emailed to the user', (int) $db->fetchColumn("SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = ? AND token_hash = ? AND created_by = ?", [$betaAdminId, hash('sha256', $lm[1] ?? ''), $adminId]) === 1
+    && (int) $db->fetchColumn("SELECT COUNT(*) FROM email_outbox WHERE to_email = 'admin@beta.test' AND subject = 'Reset your password' AND created_at >= NOW() - INTERVAL 1 MINUTE") >= 1);
+$c->post('/admin/ngos/' . $tA . '/users/' . $betaAdminId . '/reset', ['mode' => 'temporary'], true, '/admin/ngos/' . $tA);
+check('A user cannot be reset through another NGO', $c->redirectsTo('/admin/ngos/' . $tA) && $c->follow()->has('does not belong') && (int) $db->fetchColumn('SELECT must_change_password FROM users WHERE id = ?', [$betaAdminId]) === 0);
+check('Fameweb admin accounts cannot be reset from an NGO page', $c->post('/admin/ngos/' . $tB . '/users/' . $adminId . '/reset', ['mode' => 'temporary'], true, '/admin/ngos/' . $tB)->follow()->has('does not belong'));
+$c->post('/admin/ngos/' . $tB . '/users/' . $betaAdminId . '/reset', ['mode' => 'temporary'], true, '/admin/ngos/' . $tB);
+$c->follow();
+$temp = preg_match('/id="supportSecret" value="([A-Za-z0-9]{14})"/', $c->body, $tm) ? $tm[1] : '';
+check('A temporary password is shown once to the admin', $temp !== '' && !$c->get('/admin/ngos/' . $tB)->has($temp) && $c->has('Must change password'));
+check('The user is signed out everywhere', $p2b->get('/ngo')->redirectsTo('/login'));
+check('Earlier reset links stop working', $db->fetchColumn('SELECT used_at FROM password_reset_tokens WHERE token_hash = ?', [hash('sha256', $lm[1] ?? '')]) !== null);
+$notice = $db->fetch("SELECT * FROM email_outbox WHERE to_email = 'admin@beta.test' AND subject = 'Your password was reset' ORDER BY id DESC LIMIT 1");
+$everything = (string) @file_get_contents($storage . '/logs/mail.log') . (string) @file_get_contents($storage . '/logs/server.log')
+    . implode('', array_map('file_get_contents', glob($storage . '/logs/app-*.log') ?: [])) . (string) $db->fetchColumn('SELECT GROUP_CONCAT(COALESCE(metadata, "")) FROM audit_logs');
+check('The user is emailed a notice without the password', $notice && !str_contains(\App\Services\EmailService::displayBody($notice), $temp));
+check('The temporary password never reaches logs or the audit trail', $temp !== '' && !str_contains($everything, $temp));
+$bt = new Client($base);
+$bt->login('admin@beta.test', $temp);
+check('The user can sign in with the temporary password', $bt->redirectsTo('/ngo'));
+check('...but must choose a new password before anything else', $bt->get('/ngo')->redirectsTo('/account') && $bt->get('/ngo/people/members')->redirectsTo('/account')
+    && $bt->get('/account')->status === 200 && $bt->has('Choose a new password'));
+$bt->post('/account/password', ['current_password' => $temp, 'password' => $pw, 'password_confirmation' => $pw], true, '/account');
+check('After changing it the workspace opens again', $bt->redirectsTo('/account') && $bt->get('/ngo')->status === 200
+    && (int) $db->fetchColumn('SELECT must_change_password FROM users WHERE id = ?', [$betaAdminId]) === 0);
+check('The temporary password no longer works', (new Client($base))->login('admin@beta.test', $temp)->redirectsTo('/login'));
+check('Audit hash chain still verifies', AuditLogger::verify() === null);
+
+// ================================================================= 17. Production error handling
 section('Errors');
 $miss = (new Client($base))->get('/does-not-exist');
 check('Unknown route returns a friendly 404', $miss->status === 404 && !str_contains($miss->body, BASE_PATH));

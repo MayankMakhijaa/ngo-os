@@ -136,4 +136,39 @@
       });
     }
   }
+
+  // Salary / stipend slip form: live gross, deductions and net totals.
+  var slip = document.querySelector('form[data-slip-form]');
+  if (slip) {
+    var fmt = function (n) { return 'Rs. ' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    var sum = function (kind) {
+      var t = 0;
+      slip.querySelectorAll('[data-sum="' + kind + '"]').forEach(function (i) { var v = parseFloat(i.value); if (!isNaN(v)) { t += v; } });
+      return t;
+    };
+    var totals = function () {
+      var g = sum('earning'), d = sum('deduction');
+      slip.querySelector('[data-total="earning"]').textContent = fmt(g);
+      slip.querySelector('[data-total="deduction"]').textContent = fmt(d);
+      var net = slip.querySelector('[data-total="net"]');
+      net.textContent = fmt(g - d);
+      net.classList.toggle('text-danger', d > g);
+    };
+    slip.addEventListener('input', totals);
+    totals();
+  }
+
+  // 80G receipt form: warn when the donation will not be eligible (cash above the limit, in kind).
+  var receipt = document.querySelector('form[data-receipt-form]');
+  if (receipt) {
+    var limit = parseFloat(receipt.getAttribute('data-cash-limit')) || 2000;
+    var check = function () {
+      var mode = receipt.querySelector('[name="payment_mode"]').value;
+      var amount = parseFloat(receipt.querySelector('[name="amount"]').value) || 0;
+      receipt.querySelector('[data-ineligible-note]').classList.toggle('d-none', !(mode === 'kind' || (mode === 'cash' && amount > limit)));
+    };
+    receipt.addEventListener('input', check);
+    receipt.addEventListener('change', check);
+    check();
+  }
 })();
