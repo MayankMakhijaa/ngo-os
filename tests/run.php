@@ -908,6 +908,21 @@ check('Audit hash chain still verifies', AuditLogger::verify() === null);
 section('Errors');
 $miss = (new Client($base))->get('/does-not-exist');
 check('Unknown route returns a friendly 404', $miss->status === 404 && !str_contains($miss->body, BASE_PATH));
+// New code deployed before bin/migrate.php: explain the pending upgrade instead of a bare 500.
+$probe = $root . '/database/migrations/999_test_pending_probe.sql';
+file_put_contents($probe, "SELECT 1;\n");
+$db->execute('RENAME TABLE people TO people_moved_by_test');
+try {
+    $up = (new Client($base));
+    $up->login('admin@fameweb.test', $adminPass);
+    $up->get('/admin/usage');
+    check('Pending upgrade shows a 503 that points the admin at Settings', $up->status === 503 && $up->has('Apply upgrades') && $up->has('Open Settings'));
+} finally {
+    $db->execute('RENAME TABLE people_moved_by_test TO people');
+    @unlink($probe);
+}
+$up->get('/admin/usage');
+check('Page works again once the schema is complete', $up->status === 200);
 $serverLog = (string) @file_get_contents($storage . '/logs/server.log');
 $appLogs = implode('', array_map('file_get_contents', glob($storage . '/logs/app-*.log') ?: []));
 check('No PHP errors logged during the run', !preg_match('/(Fatal|Warning|Notice|Deprecated|Uncaught)/', $serverLog . $appLogs), trim(substr($appLogs ?: $serverLog, 0, 300)));
