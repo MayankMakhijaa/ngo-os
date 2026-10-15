@@ -5,6 +5,7 @@ namespace App\Core;
 
 use App\Middleware;
 use App\Services\Installer;
+use App\Services\Migrator;
 
 /** Handles one HTTP request: headers, session, CSRF, routing, middleware, controller, errors. */
 final class Application
@@ -47,7 +48,7 @@ final class Application
             $response = $this->errorResponse($e->status, $e->getMessage());
         } catch (\Throwable $e) {
             $ref = ErrorHandler::log($e);
-            $response = new Response(
+            $response = $this->pendingUpgradeResponse($e) ?? new Response(
                 View::render('errors/500', ['ref' => $ref, 'exception' => ErrorHandler::isDebug() ? $e : null], 'layouts/minimal'),
                 500
             );
@@ -88,6 +89,37 @@ final class Application
             return $result;
         }
         return new Response((string) $result);
+    }
+
+    /**
+     * New code deployed before `bin/migrate.php` ran: queries hit tables or columns that do not
+     * exist yet. Explain that instead of a bare 500, and point Fameweb admins at the fix.
+     */
+    private function pendingUpgradeResponse(\Throwable $e): ?Response
+    {
+        if (!$e instanceof \PDOException || !in_array((string) $e->getCode(), ['42S02', '42S22'], true)) {
+            return null;
+        }
+        try {
+            $pending = Migrator::pending();
+            $canUpgrade = $pending && can('platform.settings');
+        } catch (\Throwable) {
+            return null;
+        }
+        if (!$pending) {
+            return null;
+        }
+        $message = $canUpgrade
+            ? 'The database needs an upgrade before this page can work (' . count($pending) . ' pending). '
+                . 'Back up the database, then open Settings and click "Apply upgrades", or run php bin/migrate.php on the server.'
+            : 'The system is being upgraded. Please try again in a few minutes.';
+        $body = View::render('errors/generic', [
+            'status' => 503,
+            'title' => 'Upgrade needed',
+            'message' => $message,
+            'action' => $canUpgrade ? ['label' => 'Open Settings', 'url' => url('admin/settings')] : null,
+        ], 'layouts/minimal');
+        return new Response($body, 503);
     }
 
     private function errorResponse(int $status, string $message): Response
